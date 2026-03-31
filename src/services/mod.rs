@@ -5,9 +5,11 @@
 
 pub mod background;
 pub mod bridge;
+pub mod budget;
 pub mod compact;
 pub mod coordinator;
 pub mod diagnostics;
+pub mod file_cache;
 pub mod git;
 pub mod history;
 pub mod lsp;
