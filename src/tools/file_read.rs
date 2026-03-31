@@ -74,9 +74,10 @@ impl Tool for FileReadTool {
         // Handle binary/special file types.
         match path.extension().and_then(|e| e.to_str()) {
             Some("pdf") => {
-                return Ok(ToolResult::success(format!(
-                    "(PDF file: {file_path} — use a PDF extraction tool for contents)"
-                )));
+                return read_pdf(file_path).await;
+            }
+            Some("ipynb") => {
+                return read_notebook(file_path).await;
             }
             Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" | "bmp") => {
                 let meta = tokio::fs::metadata(file_path).await.ok();
@@ -129,4 +130,119 @@ impl Tool for FileReadTool {
 
         Ok(ToolResult::success(output))
     }
+}
+
+/// Extract text from a PDF file using pdftotext (poppler-utils).
+async fn read_pdf(file_path: &str) -> Result<ToolResult, ToolError> {
+    // Try pdftotext (most common PDF extraction tool on Linux/macOS).
+    let output = tokio::process::Command::new("pdftotext")
+        .args([file_path, "-"])
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            if text.trim().is_empty() {
+                Ok(ToolResult::success(format!(
+                    "(PDF file: {file_path} — extracted but contains no text. \
+                     May be image-based; OCR would be needed.)"
+                )))
+            } else {
+                // Truncate very large PDFs.
+                let display = if text.len() > 100_000 {
+                    format!(
+                        "{}\n\n(PDF truncated: {} chars total)",
+                        &text[..100_000],
+                        text.len()
+                    )
+                } else {
+                    text
+                };
+                Ok(ToolResult::success(display))
+            }
+        }
+        _ => {
+            // pdftotext not available — report file info.
+            let meta = tokio::fs::metadata(file_path).await.ok();
+            let size = meta.map(|m| m.len()).unwrap_or(0);
+            Ok(ToolResult::success(format!(
+                "(PDF file: {file_path}, {size} bytes. \
+                 Install poppler-utils for text extraction: \
+                 apt install poppler-utils / brew install poppler)"
+            )))
+        }
+    }
+}
+
+/// Render a Jupyter notebook (.ipynb) as readable text.
+async fn read_notebook(file_path: &str) -> Result<ToolResult, ToolError> {
+    let content = tokio::fs::read_to_string(file_path)
+        .await
+        .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read {file_path}: {e}")))?;
+
+    let notebook: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| ToolError::ExecutionFailed(format!("Invalid notebook JSON: {e}")))?;
+
+    let cells = notebook
+        .get("cells")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| ToolError::ExecutionFailed("Notebook has no 'cells' array".into()))?;
+
+    let mut output = String::new();
+    for (i, cell) in cells.iter().enumerate() {
+        let cell_type = cell
+            .get("cell_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        output.push_str(&format!("--- Cell {} ({}) ---\n", i + 1, cell_type));
+
+        // Source lines.
+        if let Some(source) = cell.get("source") {
+            let text = match source {
+                serde_json::Value::Array(lines) => lines
+                    .iter()
+                    .filter_map(|l| l.as_str())
+                    .collect::<Vec<_>>()
+                    .join(""),
+                serde_json::Value::String(s) => s.clone(),
+                _ => String::new(),
+            };
+            output.push_str(&text);
+            if !text.ends_with('\n') {
+                output.push('\n');
+            }
+        }
+
+        // Outputs (for code cells).
+        if cell_type == "code"
+            && let Some(outputs) = cell.get("outputs").and_then(|v| v.as_array())
+        {
+            for out in outputs {
+                if let Some(text) = out.get("text").and_then(|v| v.as_array()) {
+                    output.push_str("Output:\n");
+                    for line in text {
+                        if let Some(s) = line.as_str() {
+                            output.push_str(s);
+                        }
+                    }
+                }
+                if let Some(data) = out.get("data")
+                    && let Some(plain) = data.get("text/plain").and_then(|v| v.as_array())
+                {
+                    output.push_str("Output:\n");
+                    for line in plain {
+                        if let Some(s) = line.as_str() {
+                            output.push_str(s);
+                        }
+                    }
+                }
+            }
+        }
+
+        output.push('\n');
+    }
+
+    Ok(ToolResult::success(output))
 }

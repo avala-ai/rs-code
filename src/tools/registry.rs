@@ -27,6 +27,8 @@ impl ToolRegistry {
         registry.register(Arc::new(super::glob::GlobTool));
         registry.register(Arc::new(super::notebook_edit::NotebookEditTool));
         registry.register(Arc::new(super::lsp_tool::LspTool));
+        registry.register(Arc::new(super::mcp_resources::ListMcpResourcesTool));
+        registry.register(Arc::new(super::mcp_resources::ReadMcpResourceTool));
         registry.register(Arc::new(super::plan_mode::EnterPlanModeTool));
         registry.register(Arc::new(super::plan_mode::ExitPlanModeTool));
         registry.register(Arc::new(super::send_message::SendMessageTool));

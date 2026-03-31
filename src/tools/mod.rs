@@ -29,6 +29,7 @@ pub mod glob;
 pub mod grep;
 pub mod lsp_tool;
 pub mod mcp_proxy;
+pub mod mcp_resources;
 pub mod notebook_edit;
 pub mod plan_mode;
 pub mod registry;
