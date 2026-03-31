@@ -6,7 +6,9 @@
 pub mod background;
 pub mod bridge;
 pub mod budget;
+pub mod cache_tracking;
 pub mod compact;
+pub mod context_collapse;
 pub mod coordinator;
 pub mod diagnostics;
 pub mod file_cache;
@@ -16,4 +18,6 @@ pub mod lsp;
 pub mod mcp;
 pub mod plugins;
 pub mod session;
+pub mod session_env;
+pub mod telemetry;
 pub mod tokens;
