@@ -5,7 +5,6 @@
 //! one-shot execution mode.
 
 mod commands;
-mod compact;
 mod config;
 mod error;
 mod hooks;

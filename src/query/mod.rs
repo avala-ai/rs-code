@@ -2,16 +2,15 @@
 //!
 //! Implements the agentic cycle:
 //!
-//! 1. Build system prompt + conversation history
-//! 2. Call LLM with streaming
-//! 3. Accumulate response content blocks
-//! 4. Extract tool_use blocks
-//! 5. Execute tools (concurrent/serial batching)
-//! 6. Inject tool results into history
-//! 7. Repeat from step 2 until no tool_use or max turns
-//!
-//! This is the heart of the agent. All tool execution, permission
-//! checking, and streaming coordination happens here.
+//! 1. Auto-compact if context nears the window limit
+//! 2. Microcompact stale tool results
+//! 3. Call LLM with streaming
+//! 4. Accumulate response content blocks
+//! 5. Handle errors (prompt-too-long, rate limits, max-output-tokens)
+//! 6. Extract tool_use blocks
+//! 7. Execute tools (concurrent/serial batching)
+//! 8. Inject tool results into history
+//! 9. Repeat from step 1 until no tool_use or max turns
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,11 +23,18 @@ use crate::error::LlmError;
 use crate::llm::client::{CompletionRequest, LlmClient};
 use crate::llm::message::*;
 use crate::llm::stream::StreamEvent;
-use crate::permissions::{PermissionChecker, PermissionDecision};
+use crate::permissions::PermissionChecker;
+use crate::services::compact::{
+    self, CompactTracking, MAX_OUTPUT_TOKENS_RECOVERY_LIMIT,
+};
+use crate::services::tokens;
 use crate::state::AppState;
-use crate::tools::executor::{execute_tool_calls, extract_tool_calls, ToolCallResult};
+use crate::tools::executor::{execute_tool_calls, extract_tool_calls};
 use crate::tools::registry::ToolRegistry;
 use crate::tools::ToolContext;
+
+/// Maximum consecutive rate-limit retries before giving up.
+const MAX_RATE_LIMIT_RETRIES: u32 = 5;
 
 /// Configuration for the query engine.
 pub struct QueryEngineConfig {
@@ -55,6 +61,8 @@ pub trait StreamSink: Send + Sync {
     fn on_turn_complete(&self, _turn: usize) {}
     fn on_error(&self, error: &str);
     fn on_usage(&self, _usage: &Usage) {}
+    fn on_compact(&self, _freed_tokens: u64) {}
+    fn on_warning(&self, _msg: &str) {}
 }
 
 /// A no-op stream sink for non-interactive mode.
@@ -110,15 +118,64 @@ impl QueryEngine {
         self.state.push_message(user_msg);
 
         let max_turns = self.config.max_turns.unwrap_or(50);
+        let mut compact_tracking = CompactTracking::default();
+        let mut rate_limit_retries = 0u32;
+        let mut max_output_recovery_count = 0u32;
 
-        // Agent loop: call LLM → execute tools → repeat.
+        // Agent loop: compact → call LLM → execute tools → repeat.
         for turn in 0..max_turns {
             self.state.turn_count = turn + 1;
             self.state.is_query_active = true;
 
             debug!("Agent turn {}/{}", turn + 1, max_turns);
 
-            // Build the API request.
+            let model = self.state.config.api.model.clone();
+
+            // Step 1: Auto-compact if context is too large.
+            if compact::should_auto_compact(
+                self.state.history(),
+                &model,
+                &compact_tracking,
+            ) {
+                let token_count = tokens::estimate_context_tokens(self.state.history());
+                let threshold = compact::auto_compact_threshold(&model);
+                info!(
+                    "Auto-compact triggered: {token_count} tokens >= {threshold} threshold"
+                );
+
+                // Microcompact first: clear stale tool results.
+                let freed = compact::microcompact(&mut self.state.messages, 5);
+                if freed > 0 {
+                    sink.on_compact(freed);
+                    info!("Microcompact freed ~{freed} tokens");
+                }
+
+                // Check if microcompact was enough.
+                let post_mc_tokens = tokens::estimate_context_tokens(self.state.history());
+                if post_mc_tokens >= threshold {
+                    // Full compaction needed — for now, do aggressive microcompact
+                    // keeping only the most recent 2 tool results.
+                    let freed2 = compact::microcompact(&mut self.state.messages, 2);
+                    if freed2 > 0 {
+                        sink.on_compact(freed2);
+                        info!("Aggressive microcompact freed ~{freed2} additional tokens");
+                    }
+                    compact_tracking.was_compacted = true;
+                }
+            }
+
+            // Step 2: Check token warning state.
+            let warning = compact::token_warning_state(self.state.history(), &model);
+            if warning.is_blocking {
+                sink.on_warning("Context window nearly full. Consider starting a new session.");
+            } else if warning.is_above_warning {
+                sink.on_warning(&format!(
+                    "Context {}% remaining",
+                    warning.percent_left
+                ));
+            }
+
+            // Step 3: Build and send the API request.
             let system_prompt = build_system_prompt(&self.tools, &self.state);
             let tool_schemas = self.tools.schemas();
 
@@ -129,28 +186,63 @@ impl QueryEngine {
                 max_tokens: self.state.config.api.max_output_tokens,
             };
 
-            // Stream the response.
             let mut rx = match self.llm.stream_completion(request).await {
-                Ok(rx) => rx,
+                Ok(rx) => {
+                    rate_limit_retries = 0; // Reset on success.
+                    rx
+                }
                 Err(e) => {
-                    // Handle retryable errors.
-                    if let LlmError::RateLimited { retry_after_ms } = &e {
-                        warn!("Rate limited, waiting {}ms", retry_after_ms);
-                        tokio::time::sleep(
-                            std::time::Duration::from_millis(*retry_after_ms),
-                        )
-                        .await;
-                        continue;
+                    match &e {
+                        LlmError::RateLimited { retry_after_ms } => {
+                            rate_limit_retries += 1;
+                            if rate_limit_retries > MAX_RATE_LIMIT_RETRIES {
+                                sink.on_error(&format!(
+                                    "Rate limited {MAX_RATE_LIMIT_RETRIES} times, giving up"
+                                ));
+                                self.state.is_query_active = false;
+                                return Err(e.into());
+                            }
+                            warn!(
+                                "Rate limited (attempt {rate_limit_retries}/{MAX_RATE_LIMIT_RETRIES}), \
+                                 waiting {retry_after_ms}ms"
+                            );
+                            tokio::time::sleep(
+                                std::time::Duration::from_millis(*retry_after_ms),
+                            )
+                            .await;
+                            continue;
+                        }
+                        LlmError::Api { status, body } if *status == 413 => {
+                            // Prompt too long — try reactive compact.
+                            warn!("Prompt too long (413), attempting reactive compact");
+                            let gap = compact::parse_prompt_too_long_gap(body);
+                            let freed = compact::microcompact(&mut self.state.messages, 1);
+                            if freed > 0 {
+                                sink.on_compact(freed);
+                                info!(
+                                    "Reactive microcompact freed ~{freed} tokens (gap: {:?})",
+                                    gap
+                                );
+                                continue; // Retry with smaller context.
+                            }
+                            sink.on_error("Context too large and compaction failed");
+                            self.state.is_query_active = false;
+                            return Err(e.into());
+                        }
+                        _ => {
+                            sink.on_error(&e.to_string());
+                            self.state.is_query_active = false;
+                            return Err(e.into());
+                        }
                     }
-                    sink.on_error(&e.to_string());
-                    self.state.is_query_active = false;
-                    return Err(e.into());
                 }
             };
 
-            // Accumulate content blocks from the stream.
+            // Step 4: Accumulate content blocks from the stream.
             let mut content_blocks = Vec::new();
             let mut usage = Usage::default();
+            let mut got_error = false;
+            let mut error_text = String::new();
 
             while let Some(event) = rx.recv().await {
                 match event {
@@ -158,8 +250,10 @@ impl QueryEngine {
                         sink.on_text(&text);
                     }
                     StreamEvent::ContentBlockComplete(block) => {
-                        // Notify sink about tool starts.
-                        if let ContentBlock::ToolUse { ref name, ref input, .. } = block {
+                        if let ContentBlock::ToolUse {
+                            ref name, ref input, ..
+                        } = block
+                        {
                             sink.on_tool_start(name, input);
                         }
                         if let ContentBlock::Thinking { ref thinking, .. } = block {
@@ -175,26 +269,58 @@ impl QueryEngine {
                         sink.on_usage(&usage);
                     }
                     StreamEvent::Error(msg) => {
+                        got_error = true;
+                        error_text = msg.clone();
                         sink.on_error(&msg);
                     }
                     _ => {}
                 }
             }
 
-            // Record the assistant message.
+            // Step 5: Record the assistant message.
             let assistant_msg = Message::Assistant(AssistantMessage {
                 uuid: Uuid::new_v4(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 content: content_blocks.clone(),
-                model: Some(self.state.config.api.model.clone()),
+                model: Some(model.clone()),
                 usage: Some(usage.clone()),
                 stop_reason: None,
                 request_id: None,
             });
             self.state.push_message(assistant_msg);
-            self.state.record_usage(&usage, &self.state.config.api.model.clone());
+            self.state.record_usage(&usage, &model);
 
-            // Extract tool calls from the response.
+            // Step 6: Handle stream errors.
+            if got_error {
+                // Check if it's a prompt-too-long error in the stream.
+                if error_text.contains("prompt is too long")
+                    || error_text.contains("Prompt is too long")
+                {
+                    let freed = compact::microcompact(&mut self.state.messages, 1);
+                    if freed > 0 {
+                        sink.on_compact(freed);
+                        continue;
+                    }
+                }
+
+                // Check for max-output-tokens hit (partial response).
+                if content_blocks.iter().any(|b| matches!(b, ContentBlock::Text { .. }))
+                    && error_text.contains("max_tokens")
+                {
+                    if max_output_recovery_count < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT {
+                        max_output_recovery_count += 1;
+                        info!(
+                            "Max output tokens recovery attempt {}/{}",
+                            max_output_recovery_count, MAX_OUTPUT_TOKENS_RECOVERY_LIMIT
+                        );
+                        let recovery_msg = compact::max_output_recovery_message();
+                        self.state.push_message(recovery_msg);
+                        continue;
+                    }
+                }
+            }
+
+            // Step 7: Extract tool calls from the response.
             let tool_calls = extract_tool_calls(&content_blocks);
 
             if tool_calls.is_empty() {
@@ -205,7 +331,7 @@ impl QueryEngine {
                 return Ok(());
             }
 
-            // Execute tool calls.
+            // Step 8: Execute tool calls.
             info!("Executing {} tool call(s)", tool_calls.len());
             let cwd = PathBuf::from(&self.state.cwd);
             let tool_ctx = ToolContext {
@@ -223,7 +349,7 @@ impl QueryEngine {
             )
             .await;
 
-            // Inject tool results as user messages.
+            // Step 9: Inject tool results as user messages.
             for result in &results {
                 sink.on_tool_result(&result.tool_name, &result.result);
                 let msg = tool_result_message(
@@ -238,6 +364,7 @@ impl QueryEngine {
         }
 
         warn!("Max turns ({max_turns}) reached");
+        sink.on_warning(&format!("Agent stopped after {max_turns} turns"));
         self.state.is_query_active = false;
         Ok(())
     }
