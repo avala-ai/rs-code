@@ -11,7 +11,7 @@ use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use super::message::messages_to_api_params;
+use super::message::{messages_to_api_params, messages_to_api_params_cached};
 use super::provider::{Provider, ProviderError, ProviderRequest};
 use super::stream::{RawSseEvent, StreamEvent, StreamParser};
 
@@ -98,7 +98,11 @@ impl Provider for AnthropicProvider {
             "max_tokens": request.max_tokens,
             "stream": true,
             "system": system,
-            "messages": messages_to_api_params(&request.messages),
+            "messages": if request.enable_caching {
+                messages_to_api_params_cached(&request.messages)
+            } else {
+                messages_to_api_params(&request.messages)
+            },
             "tools": tools,
         });
 

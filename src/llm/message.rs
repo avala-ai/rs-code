@@ -416,3 +416,50 @@ fn content_blocks_to_api(blocks: &[ContentBlock]) -> serde_json::Value {
 
     serde_json::Value::Array(api_blocks)
 }
+
+/// Convert messages to API params with cache_control breakpoints.
+///
+/// Places an ephemeral cache marker on the last user message before
+/// the current turn, so the conversation prefix stays cached across
+/// the tool-call loop within a single turn.
+pub fn messages_to_api_params_cached(messages: &[Message]) -> Vec<serde_json::Value> {
+    // Find the second-to-last non-meta user message index for cache marking.
+    let user_indices: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| matches!(m, Message::User(u) if !u.is_meta))
+        .map(|(i, _)| i)
+        .collect();
+
+    let cache_index = if user_indices.len() >= 2 {
+        Some(user_indices[user_indices.len() - 2])
+    } else {
+        None
+    };
+
+    messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, msg)| match msg {
+            Message::User(u) => {
+                let mut content = content_blocks_to_api(&u.content);
+                // Add cache_control to the marked message.
+                if Some(i) == cache_index
+                    && let serde_json::Value::Array(ref mut blocks) = content
+                    && let Some(last) = blocks.last_mut()
+                {
+                    last["cache_control"] = serde_json::json!({"type": "ephemeral"});
+                }
+                Some(serde_json::json!({
+                    "role": "user",
+                    "content": content,
+                }))
+            }
+            Message::Assistant(a) => Some(serde_json::json!({
+                "role": "assistant",
+                "content": content_blocks_to_api(&a.content),
+            })),
+            Message::System(_) => None,
+        })
+        .collect()
+}
