@@ -7,6 +7,7 @@ pub mod background;
 pub mod bridge;
 pub mod compact;
 pub mod coordinator;
+pub mod diagnostics;
 pub mod git;
 pub mod lsp;
 pub mod mcp;
