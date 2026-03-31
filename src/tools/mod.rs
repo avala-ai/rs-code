@@ -29,12 +29,16 @@ pub mod glob;
 pub mod grep;
 pub mod mcp_proxy;
 pub mod notebook_edit;
+pub mod lsp_tool;
 pub mod plan_mode;
 pub mod registry;
 pub mod send_message;
+pub mod sleep_tool;
 pub mod tasks;
+pub mod todo_write;
 pub mod tool_search;
 pub mod web_fetch;
+pub mod web_search;
 pub mod worktree;
 
 use async_trait::async_trait;
