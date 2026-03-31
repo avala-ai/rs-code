@@ -9,6 +9,9 @@ pub struct Config {
     pub api: ApiConfig,
     pub permissions: PermissionsConfig,
     pub ui: UiConfig,
+    /// MCP server configurations.
+    #[serde(default)]
+    pub mcp_servers: std::collections::HashMap<String, McpServerEntry>,
 }
 
 impl Default for Config {
@@ -17,8 +20,24 @@ impl Default for Config {
             api: ApiConfig::default(),
             permissions: PermissionsConfig::default(),
             ui: UiConfig::default(),
+            mcp_servers: std::collections::HashMap::new(),
         }
     }
+}
+
+/// Entry for a configured MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerEntry {
+    /// Command to run (for stdio transport).
+    pub command: Option<String>,
+    /// Arguments for the command.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// URL (for SSE transport).
+    pub url: Option<String>,
+    /// Environment variables for the server process.
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
 }
 
 /// API connection settings.

@@ -65,6 +65,10 @@ impl Config {
         if !other.permissions.rules.is_empty() {
             self.permissions.rules.extend(other.permissions.rules);
         }
+        // MCP servers merge by name (project overrides user).
+        for (name, entry) in other.mcp_servers {
+            self.mcp_servers.insert(name, entry);
+        }
     }
 }
 

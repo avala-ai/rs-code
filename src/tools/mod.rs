@@ -29,6 +29,7 @@ pub mod glob;
 pub mod grep;
 pub mod notebook_edit;
 pub mod registry;
+pub mod tool_search;
 pub mod web_fetch;
 
 use async_trait::async_trait;
