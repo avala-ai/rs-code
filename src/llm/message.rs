@@ -210,6 +210,98 @@ pub fn user_message(text: impl Into<String>) -> Message {
     })
 }
 
+/// Helper to create an image content block from a file path.
+///
+/// Reads the file, base64-encodes it, and infers the media type
+/// from the file extension.
+pub fn image_block_from_file(path: &std::path::Path) -> Result<ContentBlock, String> {
+    let data = std::fs::read(path)
+        .map_err(|e| format!("Failed to read image: {e}"))?;
+
+    let media_type = match path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        _ => "application/octet-stream",
+    };
+
+    use std::io::Write;
+    let mut encoded = String::new();
+    {
+        let mut encoder = base64_encode_writer(&mut encoded);
+        encoder.write_all(&data).map_err(|e| format!("base64 error: {e}"))?;
+    }
+
+    Ok(ContentBlock::Image {
+        media_type: media_type.to_string(),
+        data: encoded,
+    })
+}
+
+/// Simple base64 encoder (no external dependency).
+fn base64_encode_writer(output: &mut String) -> Base64Writer<'_> {
+    Base64Writer { output, buffer: Vec::new() }
+}
+
+struct Base64Writer<'a> {
+    output: &'a mut String,
+    buffer: Vec<u8>,
+}
+
+impl<'a> std::io::Write for Base64Writer<'a> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut i = 0;
+        while i + 2 < self.buffer.len() {
+            let b0 = self.buffer[i] as usize;
+            let b1 = self.buffer[i + 1] as usize;
+            let b2 = self.buffer[i + 2] as usize;
+            self.output.push(CHARS[(b0 >> 2)] as char);
+            self.output.push(CHARS[((b0 & 3) << 4) | (b1 >> 4)] as char);
+            self.output.push(CHARS[((b1 & 0xf) << 2) | (b2 >> 6)] as char);
+            self.output.push(CHARS[b2 & 0x3f] as char);
+            i += 3;
+        }
+        let remaining = self.buffer.len() - i;
+        if remaining == 1 {
+            let b0 = self.buffer[i] as usize;
+            self.output.push(CHARS[b0 >> 2] as char);
+            self.output.push(CHARS[(b0 & 3) << 4] as char);
+            self.output.push('=');
+            self.output.push('=');
+        } else if remaining == 2 {
+            let b0 = self.buffer[i] as usize;
+            let b1 = self.buffer[i + 1] as usize;
+            self.output.push(CHARS[b0 >> 2] as char);
+            self.output.push(CHARS[((b0 & 3) << 4) | (b1 >> 4)] as char);
+            self.output.push(CHARS[(b1 & 0xf) << 2] as char);
+            self.output.push('=');
+        }
+        Ok(())
+    }
+}
+
+/// Helper to create a user message with an image.
+pub fn image_message(path: &std::path::Path, caption: &str) -> Result<Message, String> {
+    let image = image_block_from_file(path)?;
+    Ok(Message::User(UserMessage {
+        uuid: Uuid::new_v4(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        content: vec![
+            image,
+            ContentBlock::Text { text: caption.to_string() },
+        ],
+        is_meta: false,
+        is_compact_summary: false,
+    }))
+}
+
 /// Helper to create a tool result message.
 pub fn tool_result_message(tool_use_id: &str, content: &str, is_error: bool) -> Message {
     Message::User(UserMessage {
