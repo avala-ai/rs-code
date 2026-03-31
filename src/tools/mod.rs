@@ -28,7 +28,9 @@ pub mod file_write;
 pub mod glob;
 pub mod grep;
 pub mod notebook_edit;
+pub mod plan_mode;
 pub mod registry;
+pub mod tasks;
 pub mod tool_search;
 pub mod web_fetch;
 
