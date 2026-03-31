@@ -9,8 +9,11 @@
 //! - `message` — Message types for the conversation protocol
 //! - `stream` — SSE parser that yields `StreamEvent` values
 
+pub mod anthropic;
 pub mod client;
 pub mod message;
 pub mod normalize;
+pub mod openai;
+pub mod provider;
 pub mod retry;
 pub mod stream;

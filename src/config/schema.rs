@@ -34,11 +34,12 @@ pub struct McpServerEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ApiConfig {
-    /// Base URL for the LLM API (OpenAI-compatible).
+    /// Base URL for the LLM API.
     pub base_url: String,
     /// Model identifier.
     pub model: String,
-    /// API key (prefer env var `RC_API_KEY`).
+    /// API key. Resolved from (in order): config, RC_API_KEY,
+    /// ANTHROPIC_API_KEY, OPENAI_API_KEY env vars.
     #[serde(skip_serializing)]
     pub api_key: Option<String>,
     /// Maximum output tokens per response.
@@ -51,10 +52,26 @@ pub struct ApiConfig {
 
 impl Default for ApiConfig {
     fn default() -> Self {
+        // Resolve API key from multiple environment variables.
+        let api_key = std::env::var("RC_API_KEY")
+            .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
+            .or_else(|_| std::env::var("OPENAI_API_KEY"))
+            .ok();
+
+        // Auto-detect base URL from which key is set.
+        let base_url = if std::env::var("OPENAI_API_KEY").is_ok()
+            && std::env::var("RC_API_KEY").is_err()
+            && std::env::var("ANTHROPIC_API_KEY").is_err()
+        {
+            "https://api.openai.com/v1".to_string()
+        } else {
+            "https://api.anthropic.com/v1".to_string()
+        };
+
         Self {
-            base_url: "https://api.anthropic.com/v1".to_string(),
+            base_url,
             model: "claude-sonnet-4-20250514".to_string(),
-            api_key: std::env::var("RC_API_KEY").ok(),
+            api_key,
             max_output_tokens: Some(16384),
             timeout_secs: 120,
             max_retries: 3,
