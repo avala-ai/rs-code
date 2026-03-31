@@ -22,18 +22,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install Mintlify
-        run: npm install -g mintlify
+      - name: Install mdbook
+        run: |
+          curl -sL https://github.com/rust-lang/mdBook/releases/download/v0.4.44/mdbook-v0.4.44-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo mv mdbook /usr/local/bin/
 
       - name: Build docs
-        run: |
-          cd docs
-          mintlify build --output ../docs-out
+        run: cd docs && mdbook build
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

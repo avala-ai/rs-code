@@ -1,0 +1,93 @@
+
+# What is rs-code?
+
+rs-code is an open-source, AI-powered coding agent for the terminal. You describe what you want in natural language, and the agent reads your codebase, runs commands, edits files, and iterates until the task is done.
+
+It's built in pure Rust for speed, safety, and a single static binary with zero runtime dependencies.
+
+## What can it do?
+
+
+  
+    Searches your codebase, reads files, traces dependencies, and explains how things work.
+  
+  
+    Creates files, makes targeted edits, refactors code, adds features, and fixes bugs.
+  
+  
+    Executes shell commands, runs tests, manages git operations, and handles build tools.
+  
+  
+    Chains together reading, writing, and running to complete complex engineering tasks autonomously.
+  
+
+
+## How it works
+
+The core loop is simple:
+
+1. You type a request
+2. The agent sends your request + conversation history to an LLM
+3. The LLM responds with text and tool calls
+4. The agent executes the tools (file reads, edits, shell commands, etc.)
+5. Tool results are fed back to the LLM
+6. Repeat until the task is done
+
+Every tool call passes through a permission system before executing. You stay in control.
+
+```
+You: "add input validation to the signup endpoint"
+
+Agent:
+  → FileRead src/routes/signup.rs
+  → Grep "validate" src/
+  → FileEdit src/routes/signup.rs (add validation logic)
+  → Bash "cargo test"
+  → FileEdit src/routes/signup.rs (fix test failure)
+  → Bash "cargo test"
+  ✓ All tests pass. Validation added.
+```
+
+## Key features
+
+- **31 built-in tools** for file operations, shell commands, code search, web access, language servers, and more
+- **32 slash commands** for git, session management, diagnostics, and agent control
+- **Multi-provider support** — works with Anthropic (Claude), OpenAI (GPT), and any OpenAI-compatible endpoint
+- **Permission system** with configurable rules per tool and pattern
+- **MCP support** for connecting external tool servers
+- **Memory system** for persistent context across sessions
+- **Skills** for custom reusable workflows
+- **Plugin system** for bundling extensions
+- **Session persistence** with save and resume
+- **Plan mode** for safe read-only exploration
+- **Extended thinking** for complex reasoning tasks
+
+## Architecture
+
+```
+                        ┌─────────────┐
+                        │   CLI / REPL │
+                        └──────┬───────┘
+                               │
+              ┌────────────────▼────────────────┐
+              │          Query Engine            │
+              │  stream → tools → loop → compact │
+              └──┬──────────┬──────────┬────────┘
+                 │          │          │
+        ┌────────▼──┐ ┌────▼─────┐ ┌──▼───────┐
+        │   Tools   │ │ Perms    │ │  Hooks   │
+        │  31 built │ │ allow    │ │ pre/post │
+        │  + MCP    │ │ deny/ask │ │ shell    │
+        └───────────┘ └──────────┘ └──────────┘
+```
+
+## Next steps
+
+
+  
+    Get up and running in 2 minutes.
+  
+  
+    All the ways to install rs-code.
+  
+
