@@ -525,9 +525,7 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                 std::path::Path::new(&engine.state().cwd),
             ));
             if plugins.all().is_empty() {
-                println!(
-                    "No plugins loaded. Add plugin directories to ~/.config/rs-code/plugins/"
-                );
+                println!("No plugins loaded. Add plugin directories to ~/.config/rs-code/plugins/");
             } else {
                 println!("Loaded {} plugins:", plugins.all().len());
                 for p in plugins.all() {

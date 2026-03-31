@@ -7,14 +7,13 @@
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use super::message::{messages_to_api_params, Message};
+use super::message::messages_to_api_params;
 use super::provider::{Provider, ProviderError, ProviderRequest};
 use super::stream::{RawSseEvent, StreamEvent, StreamParser};
-use crate::tools::ToolSchema;
 
 pub struct AnthropicProvider {
     http: reqwest::Client,
@@ -53,13 +52,9 @@ impl Provider for AnthropicProvider {
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
             "x-api-key",
-            HeaderValue::from_str(&self.api_key)
-                .map_err(|e| ProviderError::Auth(e.to_string()))?,
+            HeaderValue::from_str(&self.api_key).map_err(|e| ProviderError::Auth(e.to_string()))?,
         );
-        headers.insert(
-            "anthropic-version",
-            HeaderValue::from_static("2023-06-01"),
-        );
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
 
         // Enable prompt caching if requested.
         if request.enable_caching {
@@ -167,12 +162,10 @@ impl Provider for AnthropicProvider {
                             Ok(raw) => {
                                 let events = parser.process(raw);
                                 for event in events {
-                                    if !first_token {
-                                        if matches!(event, StreamEvent::TextDelta(_)) {
-                                            first_token = true;
-                                            let ttft = start.elapsed().as_millis() as u64;
-                                            let _ = tx.send(StreamEvent::Ttft(ttft)).await;
-                                        }
+                                    if !first_token && matches!(event, StreamEvent::TextDelta(_)) {
+                                        first_token = true;
+                                        let ttft = start.elapsed().as_millis() as u64;
+                                        let _ = tx.send(StreamEvent::Ttft(ttft)).await;
                                     }
                                     if tx.send(event).await.is_err() {
                                         return;
@@ -205,14 +198,13 @@ fn extract_sse_data(event_text: &str) -> Option<&str> {
 }
 
 fn parse_retry_after(body: &str) -> u64 {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
-        if let Some(retry) = v
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body)
+        && let Some(retry) = v
             .get("error")
             .and_then(|e| e.get("retry_after"))
             .and_then(|r| r.as_f64())
-        {
-            return (retry * 1000.0) as u64;
-        }
+    {
+        return (retry * 1000.0) as u64;
     }
     1000
 }

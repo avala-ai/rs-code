@@ -6,14 +6,13 @@
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::debug;
 
-use super::message::{messages_to_api_params, ContentBlock, Message, StopReason, Usage};
+use super::message::{ContentBlock, Message, StopReason, Usage};
 use super::provider::{Provider, ProviderError, ProviderRequest};
 use super::stream::StreamEvent;
-use crate::tools::ToolSchema;
 
 pub struct OpenAiProvider {
     http: reqwest::Client,
@@ -69,16 +68,14 @@ impl OpenAiProvider {
                         .content
                         .iter()
                         .filter_map(|b| match b {
-                            ContentBlock::ToolUse { id, name, input } => {
-                                Some(serde_json::json!({
-                                    "id": id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": name,
-                                        "arguments": serde_json::to_string(input).unwrap_or_default(),
-                                    }
-                                }))
-                            }
+                            ContentBlock::ToolUse { id, name, input } => Some(serde_json::json!({
+                                "id": id,
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": serde_json::to_string(input).unwrap_or_default(),
+                                }
+                            })),
                             _ => None,
                         })
                         .collect();
@@ -113,35 +110,35 @@ impl OpenAiProvider {
         for msg in messages {
             if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
                 // Check if this is actually a tool result message.
-                if let Some(content) = msg.get("content") {
-                    if let Some(arr) = content.as_array() {
-                        let mut tool_results = Vec::new();
-                        let mut other_content = Vec::new();
+                if let Some(content) = msg.get("content")
+                    && let Some(arr) = content.as_array()
+                {
+                    let mut tool_results = Vec::new();
+                    let mut other_content = Vec::new();
 
-                        for block in arr {
-                            if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
-                                tool_results.push(serde_json::json!({
+                    for block in arr {
+                        if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                            tool_results.push(serde_json::json!({
                                     "role": "tool",
                                     "tool_call_id": block.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or(""),
                                     "content": block.get("content").and_then(|v| v.as_str()).unwrap_or(""),
                                 }));
-                            } else {
-                                other_content.push(block.clone());
-                            }
+                        } else {
+                            other_content.push(block.clone());
                         }
+                    }
 
-                        if !tool_results.is_empty() {
-                            // Emit tool results as separate messages.
-                            for tr in tool_results {
-                                final_messages.push(tr);
-                            }
-                            if !other_content.is_empty() {
-                                let mut m = msg.clone();
-                                m["content"] = serde_json::Value::Array(other_content);
-                                final_messages.push(m);
-                            }
-                            continue;
+                    if !tool_results.is_empty() {
+                        // Emit tool results as separate messages.
+                        for tr in tool_results {
+                            final_messages.push(tr);
                         }
+                        if !other_content.is_empty() {
+                            let mut m = msg.clone();
+                            m["content"] = serde_json::Value::Array(other_content);
+                            final_messages.push(m);
+                        }
+                        continue;
                     }
                 }
             }
@@ -285,8 +282,10 @@ impl Provider for OpenAiProvider {
                             None => {
                                 // Check for usage in the final chunk.
                                 if let Some(u) = parsed.get("usage") {
-                                    usage.input_tokens =
-                                        u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    usage.input_tokens = u
+                                        .get("prompt_tokens")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0);
                                     usage.output_tokens = u
                                         .get("completion_tokens")
                                         .and_then(|v| v.as_u64())
@@ -297,10 +296,10 @@ impl Provider for OpenAiProvider {
                         };
 
                         // Text content.
-                        if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                            if !content.is_empty() {
-                                let _ = tx.send(StreamEvent::TextDelta(content.to_string())).await;
-                            }
+                        if let Some(content) = delta.get("content").and_then(|c| c.as_str())
+                            && !content.is_empty()
+                        {
+                            let _ = tx.send(StreamEvent::TextDelta(content.to_string())).await;
                         }
 
                         // Tool calls.
@@ -308,9 +307,7 @@ impl Provider for OpenAiProvider {
                         {
                             for tc in tool_calls {
                                 if let Some(func) = tc.get("function") {
-                                    if let Some(name) =
-                                        func.get("name").and_then(|n| n.as_str())
-                                    {
+                                    if let Some(name) = func.get("name").and_then(|n| n.as_str()) {
                                         // New tool call starting.
                                         if !current_tool_id.is_empty()
                                             && !current_tool_args.is_empty()
@@ -376,10 +373,10 @@ impl Provider for OpenAiProvider {
 
 /// Convert content blocks to OpenAI format.
 fn blocks_to_openai_content(blocks: &[ContentBlock]) -> serde_json::Value {
-    if blocks.len() == 1 {
-        if let ContentBlock::Text { text } = &blocks[0] {
-            return serde_json::Value::String(text.clone());
-        }
+    if blocks.len() == 1
+        && let ContentBlock::Text { text } = &blocks[0]
+    {
+        return serde_json::Value::String(text.clone());
     }
 
     let parts: Vec<serde_json::Value> = blocks
