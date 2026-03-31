@@ -12,4 +12,5 @@
 pub mod client;
 pub mod message;
 pub mod normalize;
+pub mod retry;
 pub mod stream;
