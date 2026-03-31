@@ -375,7 +375,7 @@ impl QueryEngine {
     }
 }
 
-/// Build the system prompt from tool definitions and app state.
+/// Build the system prompt from tool definitions, app state, and memory.
 pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
     let mut prompt = String::new();
 
@@ -395,6 +395,15 @@ pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
         std::env::consts::OS,
     ));
 
+    // Inject memory context (project + user).
+    let memory = crate::memory::MemoryContext::load(
+        Some(std::path::Path::new(&state.cwd)),
+    );
+    let memory_section = memory.to_system_prompt_section();
+    if !memory_section.is_empty() {
+        prompt.push_str(&memory_section);
+    }
+
     // Tool documentation.
     prompt.push_str("# Available Tools\n\n");
     for tool in tools.all() {
@@ -403,14 +412,22 @@ pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
         }
     }
 
-    // Safety guidelines.
+    // Guidelines.
     prompt.push_str(
-        "# Guidelines\n\
-         - Read files before editing them.\n\
+        "# Guidelines\n\n\
+         - Read files before editing them. Understand existing code before suggesting modifications.\n\
          - Prefer editing existing files over creating new ones.\n\
-         - Use the appropriate dedicated tool instead of shell commands when possible.\n\
+         - Use the appropriate dedicated tool instead of shell commands when possible:\n\
+           - File search: use Glob (not find or ls)\n\
+           - Content search: use Grep (not grep or rg)\n\
+           - Read files: use FileRead (not cat/head/tail)\n\
+           - Edit files: use FileEdit (not sed/awk)\n\
+           - Write files: use FileWrite (not echo/cat)\n\
          - Be careful not to introduce security vulnerabilities.\n\
-         - Only make changes that were requested.\n",
+         - Only make changes that were requested. Don't add features or refactor beyond the ask.\n\
+         - Keep responses concise. Lead with the answer, not the reasoning.\n\
+         - When referencing code, include file_path:line_number.\n\
+         - For git operations: prefer new commits over amending, never force-push without asking.\n",
     );
 
     prompt
