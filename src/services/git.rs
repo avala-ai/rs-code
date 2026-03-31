@@ -37,6 +37,67 @@ pub async fn repo_root(cwd: &Path) -> Option<String> {
     }
 }
 
+/// Resolve the canonical repository root, following worktree links.
+///
+/// If the current directory is inside a worktree, this returns the
+/// path to the main repository (not the worktree checkout).
+pub async fn canonical_root(cwd: &Path) -> Option<String> {
+    // git rev-parse --git-common-dir gives the shared .git directory.
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(cwd)
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return repo_root(cwd).await;
+    }
+
+    let common_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    // If the common dir ends with "/.git", the parent is the canonical root.
+    if common_dir.ends_with("/.git") || common_dir.ends_with("\\.git") {
+        let root = common_dir
+            .strip_suffix("/.git")
+            .or_else(|| common_dir.strip_suffix("\\.git"))
+            .unwrap_or(&common_dir);
+        Some(root.to_string())
+    } else if common_dir == ".git" {
+        // Not a worktree — use regular root.
+        repo_root(cwd).await
+    } else {
+        // Absolute path to shared git dir.
+        let path = std::path::Path::new(&common_dir);
+        path.parent().map(|p| p.display().to_string())
+    }
+}
+
+/// Check if the repository is a shallow clone.
+pub async fn is_shallow(cwd: &Path) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--is-shallow-repository"])
+        .current_dir(cwd)
+        .output()
+        .await
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
+}
+
+/// Check if the current directory is inside a worktree (not the main checkout).
+pub async fn is_worktree(cwd: &Path) -> bool {
+    let toplevel = repo_root(cwd).await;
+    let canonical = canonical_root(cwd).await;
+    match (toplevel, canonical) {
+        (Some(t), Some(c)) => t != c,
+        _ => false,
+    }
+}
+
 /// Get the current branch name.
 pub async fn current_branch(cwd: &Path) -> Option<String> {
     let output = Command::new("git")
