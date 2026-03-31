@@ -292,14 +292,15 @@ pub async fn compact_with_llm(
     let summary_prompt = build_compact_summary_prompt(to_summarize);
 
     // Call the LLM to generate the summary.
-    let request = crate::llm::client::CompletionRequest {
-        messages: &[crate::llm::message::user_message(&summary_prompt)],
-        system_prompt: "You are a conversation summarizer. Produce a concise summary \
-                        preserving key decisions, file changes, and important context. \
-                        Do not use tools.",
-        tools: &[],
-        max_tokens: Some(4096),
-    };
+    let summary_messages = vec![crate::llm::message::user_message(&summary_prompt)];
+    let request = crate::llm::client::CompletionRequest::simple(
+        &summary_messages,
+        "You are a conversation summarizer. Produce a concise summary \
+         preserving key decisions, file changes, and important context. \
+         Do not use tools.",
+        &[],
+        Some(4096),
+    );
 
     let mut rx = match llm.stream_completion(request).await {
         Ok(rx) => rx,
