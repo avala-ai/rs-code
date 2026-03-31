@@ -1,0 +1,70 @@
+[package]
+name = "rust-code"
+version = "0.1.0"
+edition = "2024"
+description = "An AI-powered coding agent for the terminal"
+license = "MIT"
+repository = "https://github.com/avala-ai/rust-code"
+
+[[bin]]
+name = "rc"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+tokio-util = "0.7"
+
+# HTTP & streaming
+reqwest = { version = "0.12", features = ["stream", "json", "rustls-tls"], default-features = false }
+reqwest-eventsource = "0.6"
+eventsource-stream = "0.2"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Async traits
+async-trait = "0.1"
+
+# Terminal UI
+rustyline = { version = "15", features = ["derive"] }
+crossterm = "0.28"
+termimad = "0.30"
+syntect = "5"
+indicatif = "0.17"
+
+# File operations
+glob = "0.3"
+ignore = "0.4"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+pin-project-lite = "0.2"
+bytes = "1"
+regex = "1"
+similar = "2"
+
+[dev-dependencies]
+tempfile = "3"
+assert_cmd = "2"
+predicates = "3"
+tokio-test = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
