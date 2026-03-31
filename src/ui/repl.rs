@@ -197,7 +197,20 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
 
         match rl.readline(&prompt) {
             Ok(line) => {
-                let input = line.trim();
+                let mut input_buf = line.clone();
+
+                // Multi-line input: if line ends with \, keep reading.
+                while input_buf.trim_end().ends_with('\\') {
+                    input_buf.truncate(input_buf.trim_end().len() - 1);
+                    input_buf.push('\n');
+                    let cont_prompt = format!("{} ", ".".dark_grey());
+                    match rl.readline(&cont_prompt) {
+                        Ok(next) => input_buf.push_str(&next),
+                        Err(_) => break,
+                    }
+                }
+
+                let input = input_buf.trim();
                 if input.is_empty() {
                     continue;
                 }

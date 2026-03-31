@@ -126,9 +126,17 @@ impl Tool for AgentTool {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
-        // Pass through the API key.
-        if let Ok(key) = std::env::var("RC_API_KEY") {
-            cmd.env("RC_API_KEY", key);
+        // Pass through environment so the subagent uses the same provider.
+        for var in &[
+            "RC_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "RC_API_BASE_URL",
+            "RC_MODEL",
+        ] {
+            if let Ok(val) = std::env::var(var) {
+                cmd.env(var, val);
+            }
         }
 
         let timeout = std::time::Duration::from_secs(300); // 5 minute timeout.
