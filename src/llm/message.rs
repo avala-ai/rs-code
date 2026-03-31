@@ -117,12 +117,17 @@ pub enum ContentBlock {
     },
 
     /// The result of a tool execution, sent back to the model.
+    /// Content can be a simple string or an array of content blocks
+    /// (e.g., text + images for vision-enabled tool results).
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
         content: String,
         #[serde(default)]
         is_error: bool,
+        /// Optional rich content blocks (images, etc.) alongside the text.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        extra_content: Vec<ToolResultBlock>,
     },
 
     /// Extended thinking content (model reasoning).
@@ -134,6 +139,20 @@ pub enum ContentBlock {
     },
 
     /// Image content.
+    #[serde(rename = "image")]
+    Image {
+        #[serde(rename = "media_type")]
+        media_type: String,
+        data: String,
+    },
+}
+
+/// A block within a rich tool result (for multi-modal tool output).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ToolResultBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
     #[serde(rename = "image")]
     Image {
         #[serde(rename = "media_type")]
@@ -318,6 +337,7 @@ pub fn tool_result_message(tool_use_id: &str, content: &str, is_error: bool) -> 
             tool_use_id: tool_use_id.to_string(),
             content: content.to_string(),
             is_error,
+            extra_content: vec![],
         }],
         is_meta: true,
         is_compact_summary: false,
@@ -361,6 +381,7 @@ fn content_blocks_to_api(blocks: &[ContentBlock]) -> serde_json::Value {
                 tool_use_id,
                 content,
                 is_error,
+                ..
             } => serde_json::json!({
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,

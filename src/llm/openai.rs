@@ -396,6 +396,7 @@ fn blocks_to_openai_content(blocks: &[ContentBlock]) -> serde_json::Value {
                 tool_use_id,
                 content,
                 is_error,
+                ..
             } => serde_json::json!({
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,

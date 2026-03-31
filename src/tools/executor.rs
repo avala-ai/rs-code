@@ -38,6 +38,7 @@ impl ToolCallResult {
             tool_use_id: self.tool_use_id.clone(),
             content: self.result.content.clone(),
             is_error: self.result.is_error,
+            extra_content: vec![],
         }
     }
 }

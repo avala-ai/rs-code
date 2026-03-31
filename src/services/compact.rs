@@ -147,6 +147,7 @@ pub fn microcompact(messages: &mut [Message], keep_recent: usize) -> u64 {
                 ref mut content,
                 tool_use_id: _,
                 is_error: _,
+                ..
             } = u.content[block_idx]
         {
             let old_tokens = tokens::estimate_tokens(content);
