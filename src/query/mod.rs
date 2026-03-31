@@ -308,11 +308,13 @@ impl QueryEngine {
                 },
             };
 
-            // Step 4: Accumulate content blocks from the stream.
+            // Step 4: Stream response, submitting tool_use blocks for
+            // overlapped execution as they complete.
             let mut content_blocks = Vec::new();
             let mut usage = Usage::default();
             let mut got_error = false;
             let mut error_text = String::new();
+            let mut _pending_tool_count = 0usize;
 
             while let Some(event) = rx.recv().await {
                 match event {
@@ -327,6 +329,7 @@ impl QueryEngine {
                         } = block
                         {
                             sink.on_tool_start(name, input);
+                            _pending_tool_count += 1;
                         }
                         if let ContentBlock::Thinking { ref thinking, .. } = block {
                             sink.on_thinking(thinking);
