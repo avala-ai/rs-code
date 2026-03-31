@@ -142,6 +142,9 @@ pub struct ToolContext {
     pub plan_mode: bool,
     /// File content cache for avoiding redundant reads.
     pub file_cache: Option<Arc<tokio::sync::Mutex<crate::services::file_cache::FileCache>>>,
+    /// Permission denial tracker for reporting.
+    pub denial_tracker:
+        Option<Arc<tokio::sync::Mutex<crate::permissions::tracking::DenialTracker>>>,
 }
 
 /// Result of a tool execution.

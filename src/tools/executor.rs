@@ -131,6 +131,7 @@ pub async fn execute_tool_calls(
                                     verbose: ctx_verbose,
                                     plan_mode: ctx_plan_mode,
                                     file_cache: ctx_file_cache,
+                                    denial_tracker: None,
                                 },
                                 &perm_checker,
                             )
@@ -190,6 +191,12 @@ async fn execute_single_tool(
     match decision {
         PermissionDecision::Allow => {}
         PermissionDecision::Deny(reason) => {
+            if let Some(ref tracker) = ctx.denial_tracker {
+                tracker
+                    .lock()
+                    .await
+                    .record(&call.name, &call.id, &reason, &call.input);
+            }
             return ToolCallResult {
                 tool_use_id: call.id.clone(),
                 tool_name: call.name.clone(),

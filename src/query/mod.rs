@@ -404,6 +404,7 @@ impl QueryEngine {
                 verbose: self.config.verbose,
                 plan_mode: self.state.plan_mode,
                 file_cache: Some(self.file_cache.clone()),
+                denial_tracker: None,
             };
 
             // Fire pre-tool-use hooks.
