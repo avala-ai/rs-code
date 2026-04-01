@@ -500,6 +500,11 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                     );
                     println!(
                         "  {}  {}",
+                        "& prompt".with(t.text),
+                        "run prompt in background".with(t.muted),
+                    );
+                    println!(
+                        "  {}  {}",
                         "/ + command".with(t.text),
                         "slash commands (/help to list all)".with(t.muted),
                     );
@@ -598,6 +603,40 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                     input.to_string()
                 };
                 let input = input.trim();
+
+                // & prefix: run prompt in background (fire-and-forget agent turn).
+                if input.starts_with('&') {
+                    let bg_input = input.strip_prefix('&').unwrap_or("").trim().to_string();
+                    if !bg_input.is_empty() {
+                        let t = super::theme::current();
+                        eprintln!(
+                            "  {} {}",
+                            "⟡".with(t.accent),
+                            format!("background: {}", &bg_input[..bg_input.len().min(60)])
+                                .with(t.muted),
+                        );
+                        // TODO: spawn actual background agent turn.
+                        // For now, just run it as a normal turn.
+                        sink.start_indicator();
+                        let cancel_token = engine.cancel_token();
+                        let esc_watcher = spawn_escape_watcher(move || cancel_token.cancel());
+                        if let Err(e) = engine.run_turn_with_sink(&bg_input, &sink).await {
+                            let t = super::theme::current();
+                            eprintln!(
+                                "{} {e}",
+                                super::theme::label(
+                                    " ERROR ",
+                                    t.error,
+                                    crossterm::style::Color::White
+                                )
+                            );
+                        }
+                        esc_watcher.abort();
+                        sink.ensure_newline();
+                        println!();
+                    }
+                    continue;
+                }
 
                 // ! prefix: run shell command directly (bash mode).
                 if input.starts_with('!') {
