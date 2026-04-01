@@ -157,24 +157,52 @@ impl StreamSink for TerminalSink {
         self.stop_indicator();
         self.ensure_newline();
         let t = super::theme::current();
-        let label = format!(" {tool_name} ");
         let detail = summarize_tool_input(tool_name, input);
+
+        // Box-drawing header for tool execution.
+        let header = format!(" {tool_name} ");
         eprintln!(
-            "{} {}",
-            super::theme::label(&label, t.tool, crossterm::style::Color::Black),
-            detail.with(t.muted)
+            "  {} {} {}",
+            "╭".with(t.muted),
+            super::theme::label(&header, t.tool, crossterm::style::Color::Black),
+            detail.with(t.muted),
         );
     }
 
-    fn on_tool_result(&self, tool_name: &str, result: &ToolResult) {
+    fn on_tool_result(&self, _tool_name: &str, result: &ToolResult) {
+        let t = super::theme::current();
         if result.is_error {
-            let t = super::theme::current();
-            let label = format!(" {tool_name} ERROR ");
             let first_line = result.content.lines().next().unwrap_or("");
             eprintln!(
-                "{} {}",
-                super::theme::label(&label, t.error, crossterm::style::Color::White),
-                first_line.with(t.error)
+                "  {} {} {}",
+                "╰".with(t.muted),
+                "✗".with(t.error),
+                first_line.with(t.error),
+            );
+        } else {
+            // Show success with brief content preview.
+            let preview = result
+                .content
+                .lines()
+                .next()
+                .unwrap_or("(ok)")
+                .chars()
+                .take(80)
+                .collect::<String>();
+            let line_count = result.content.lines().count();
+            let suffix = if line_count > 1 {
+                format!(" (+{} lines)", line_count - 1)
+                    .with(t.muted)
+                    .to_string()
+            } else {
+                String::new()
+            };
+            eprintln!(
+                "  {} {} {}{}",
+                "╰".with(t.muted),
+                "✓".with(t.success),
+                preview.with(t.muted),
+                suffix,
             );
         }
         // Restart indicator — LLM will be called again with tool results.
@@ -183,11 +211,20 @@ impl StreamSink for TerminalSink {
 
     fn on_thinking(&self, text: &str) {
         self.stop_indicator();
-        // Show a brief thinking indicator, not the full content.
-        if text.len() > 80 {
+        let t = super::theme::current();
+        if text.len() <= 200 {
+            // Short thinking — show full content.
             eprint!(
                 "\r{}\r",
-                format!("  thinking ({} chars)...", text.len()).with(super::theme::current().muted)
+                format!("  thinking: {}", text.trim()).with(t.muted)
+            );
+        } else {
+            // Long thinking — show preview.
+            let preview: String = text.chars().take(120).collect();
+            let preview = preview.trim();
+            eprint!(
+                "\r{}\r",
+                format!("  thinking: {preview}... ({} chars)", text.len()).with(t.muted)
             );
         }
     }
@@ -196,9 +233,11 @@ impl StreamSink for TerminalSink {
         self.stop_indicator();
         self.ensure_newline();
         if self.verbose {
+            let t = super::theme::current();
             eprintln!(
-                "{}",
-                format!("  (turn {turn} complete)").with(super::theme::current().muted)
+                "  {} {}",
+                "·".with(t.muted),
+                format!("turn {turn} complete").with(t.muted),
             );
         }
     }
@@ -215,29 +254,29 @@ impl StreamSink for TerminalSink {
 
     fn on_usage(&self, usage: &Usage) {
         if self.verbose && usage.total() > 0 {
-            let cache_info = if usage.cache_read_input_tokens > 0 {
-                format!(
-                    ", cache: {}r/{}w",
-                    usage.cache_read_input_tokens, usage.cache_creation_input_tokens
-                )
-            } else {
-                String::new()
-            };
+            let t = super::theme::current();
+            let mut parts = vec![format!("{}in", usage.input_tokens)];
+            parts.push(format!("{}out", usage.output_tokens));
+            if usage.cache_read_input_tokens > 0 {
+                parts.push(format!("{}cache↓", usage.cache_read_input_tokens));
+            }
+            if usage.cache_creation_input_tokens > 0 {
+                parts.push(format!("{}cache↑", usage.cache_creation_input_tokens));
+            }
             eprintln!(
-                "{}",
-                format!(
-                    "  tokens: {}in + {}out{cache_info}",
-                    usage.input_tokens, usage.output_tokens
-                )
-                .with(super::theme::current().muted)
+                "  {} {}",
+                "⟡".with(t.muted),
+                parts.join(" · ").with(t.muted),
             );
         }
     }
 
     fn on_compact(&self, freed_tokens: u64) {
+        let t = super::theme::current();
         eprintln!(
-            "{}",
-            format!("  compacted ~{freed_tokens} tokens").with(super::theme::current().muted)
+            "  {} {}",
+            "↻".with(t.accent),
+            format!("compacted ~{freed_tokens} tokens").with(t.muted),
         );
     }
 
