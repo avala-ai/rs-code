@@ -171,6 +171,7 @@ impl OpenAiProvider {
             "model": request.model,
             "messages": final_messages,
             "stream": true,
+            "stream_options": { "include_usage": true },
         });
 
         if uses_new_token_param {

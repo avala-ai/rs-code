@@ -218,9 +218,11 @@ impl StreamSink for TerminalSink {
         self.stop_indicator();
         self.ensure_newline();
 
-        // Render the turn summary panel if there were tool calls.
+        // Render the turn summary panel if there were multiple tool calls
+        // or at least one success. Skip for single-error turns (noisy).
         let state = self.turn_state.lock().unwrap();
-        if !state.tools.is_empty() {
+        let has_success = state.tools.iter().any(|t| !t.is_error);
+        if state.tools.len() > 1 || has_success {
             super::tui::render_turn_summary(&state, turn);
         }
         drop(state);
