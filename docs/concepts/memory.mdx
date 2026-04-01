@@ -7,7 +7,7 @@ Memory gives the agent context that persists across sessions. There are two laye
 
 ## Project memory
 
-Place a `CONTEXT.md` file in your project root or `.agent/CONTEXT.md`:
+Place a `AGENTS.md` file in your project root or `.agent/AGENTS.md`:
 
 ```markdown
 # Project Context
@@ -50,7 +50,7 @@ type: user
 
 Memory files are injected into the system prompt at session start:
 
-1. Project `CONTEXT.md` → appears under "# Project Context"
+1. Project `AGENTS.md` → appears under "# Project Context"
 2. User `MEMORY.md` index → appears under "# User Memory"
 3. Individual memory files linked from the index → loaded and appended
 

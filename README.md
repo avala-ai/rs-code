@@ -301,7 +301,7 @@ action = { type = "shell", command = "cargo fmt" }
 
 Persistent context that carries across sessions:
 
-- **Project memory:** `.agent/CONTEXT.md` in your repo root. Loaded automatically.
+- **Project memory:** `.agent/AGENTS.md` in your repo root. Loaded automatically.
 - **User memory:** `~/.config/agent-code/memory/MEMORY.md`. Personal preferences and patterns.
 
 ## Contributing

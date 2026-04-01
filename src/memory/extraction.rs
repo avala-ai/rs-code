@@ -87,7 +87,7 @@ fn build_extraction_prompt(new_message_count: usize, memory_dir: &Path) -> Strin
          - Code patterns or architecture (derivable from reading code)\n\
          - Git history (use git log)\n\
          - Debugging solutions (fix is in the code)\n\
-         - Anything ephemeral or already in CONTEXT.md\n\n\
+         - Anything ephemeral or already in AGENTS.md\n\n\
          {manifest}\n\n\
          For each memory worth saving, output a JSON object on its own line:\n\
          {{\"filename\": \"topic_name.md\", \"name\": \"Topic Name\", \

@@ -120,27 +120,32 @@ impl MemoryContext {
 /// Load project context by traversing the directory hierarchy.
 ///
 /// Checks (in priority order, lowest to highest):
-/// 1. User global: ~/.config/agent-code/CONTEXT.md
-/// 2. Project root: CONTEXT.md, .agent/CONTEXT.md
-/// 3. Project rules: .agent/rules/*.md (all files concatenated)
-/// 4. Project local: CONTEXT.local.md (gitignored overrides)
+/// 1. User global: ~/.config/agent-code/AGENTS.md
+/// 2. Project root: AGENTS.md, .agent/AGENTS.md (+ CLAUDE.md compat)
+/// 3. Project rules: .agent/rules/*.md AND .claude/rules/*.md
+/// 4. Project local: AGENTS.local.md / CLAUDE.local.md (gitignored)
 ///
-/// Files closer to cwd have higher priority (loaded later, overrides earlier).
+/// CLAUDE.md is supported for compatibility with existing projects.
+/// If both AGENTS.md and CLAUDE.md exist, both are loaded (AGENTS.md first).
 fn load_project_context(project_root: &Path) -> Option<String> {
     let mut sections = Vec::new();
 
     // Layer 1: User global context.
-    if let Some(global_path) = dirs::config_dir().map(|d| d.join("agent-code").join("CONTEXT.md"))
-        && let Some(content) = load_truncated_file(&global_path)
-    {
-        debug!("Loaded global context from {}", global_path.display());
-        sections.push(content);
+    for name in &["AGENTS.md", "CLAUDE.md"] {
+        if let Some(global_path) = dirs::config_dir().map(|d| d.join("agent-code").join(name))
+            && let Some(content) = load_truncated_file(&global_path)
+        {
+            debug!("Loaded global context from {}", global_path.display());
+            sections.push(content);
+        }
     }
 
-    // Layer 2: Project root context.
+    // Layer 2: Project root context (AGENTS.md primary, CLAUDE.md compat).
     for path in &[
-        project_root.join("CONTEXT.md"),
-        project_root.join(".agent").join("CONTEXT.md"),
+        project_root.join("AGENTS.md"),
+        project_root.join(".agent").join("AGENTS.md"),
+        project_root.join("CLAUDE.md"),
+        project_root.join(".claude").join("CLAUDE.md"),
     ] {
         if let Some(content) = load_truncated_file(path) {
             debug!("Loaded project context from {}", path.display());
@@ -148,30 +153,38 @@ fn load_project_context(project_root: &Path) -> Option<String> {
         }
     }
 
-    // Layer 3: Rules directory (all .md files).
-    let rules_dir = project_root.join(".agent").join("rules");
-    if rules_dir.is_dir()
-        && let Ok(entries) = std::fs::read_dir(&rules_dir)
-    {
-        let mut rule_files: Vec<_> = entries
-            .flatten()
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md") && e.path().is_file())
-            .collect();
-        rule_files.sort_by_key(|e| e.file_name());
+    // Layer 3: Rules directories (both .agent/ and .claude/ for compat).
+    for rules_dir in &[
+        project_root.join(".agent").join("rules"),
+        project_root.join(".claude").join("rules"),
+    ] {
+        if rules_dir.is_dir()
+            && let Ok(entries) = std::fs::read_dir(rules_dir)
+        {
+            let mut rule_files: Vec<_> = entries
+                .flatten()
+                .filter(|e| {
+                    e.path().extension().is_some_and(|ext| ext == "md") && e.path().is_file()
+                })
+                .collect();
+            rule_files.sort_by_key(|e| e.file_name());
 
-        for entry in rule_files {
-            if let Some(content) = load_truncated_file(&entry.path()) {
-                debug!("Loaded rule from {}", entry.path().display());
-                sections.push(content);
+            for entry in rule_files {
+                if let Some(content) = load_truncated_file(&entry.path()) {
+                    debug!("Loaded rule from {}", entry.path().display());
+                    sections.push(content);
+                }
             }
         }
     }
 
     // Layer 4: Local overrides (gitignored).
-    let local_path = project_root.join("CONTEXT.local.md");
-    if let Some(content) = load_truncated_file(&local_path) {
-        debug!("Loaded local context from {}", local_path.display());
-        sections.push(content);
+    for name in &["AGENTS.local.md", "CLAUDE.local.md"] {
+        let local_path = project_root.join(name);
+        if let Some(content) = load_truncated_file(&local_path) {
+            debug!("Loaded local context from {}", local_path.display());
+            sections.push(content);
+        }
     }
 
     if sections.is_empty() {

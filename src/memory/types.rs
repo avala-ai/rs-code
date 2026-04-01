@@ -35,7 +35,7 @@ pub const EXCLUSION_RULES: &[&str] = &[
     "Code patterns, conventions, architecture, file paths — derivable from code",
     "Git history, recent changes — use git log / git blame",
     "Debugging solutions — the fix is in the code, commit message has context",
-    "Anything already in project CONTEXT.md",
+    "Anything already in project AGENTS.md",
     "Ephemeral task details or current conversation context",
 ];
 
