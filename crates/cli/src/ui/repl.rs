@@ -495,6 +495,11 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                     );
                     println!(
                         "  {}  {}",
+                        "@ path/file".with(t.text),
+                        "attach file contents to prompt".with(t.muted),
+                    );
+                    println!(
+                        "  {}  {}",
                         "/ + command".with(t.text),
                         "slash commands (/help to list all)".with(t.muted),
                     );
@@ -585,6 +590,14 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                     }
                     println!();
                 }
+
+                // @ file path expansion: inline file contents into the prompt.
+                let input = if input.contains('@') {
+                    expand_file_references(input, &engine.state().cwd)
+                } else {
+                    input.to_string()
+                };
+                let input = input.trim();
 
                 // ! prefix: run shell command directly (bash mode).
                 if input.starts_with('!') {
@@ -796,4 +809,73 @@ fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
     } else {
         raw
     }
+}
+
+/// Expand @path references in user input to include file contents.
+/// e.g., "explain @src/main.rs" → "explain\n\nContents of src/main.rs:\n```\n...```"
+fn expand_file_references(input: &str, cwd: &str) -> String {
+    let mut result = String::new();
+    let mut last_end = 0;
+
+    // Find @path patterns (@ followed by non-whitespace chars containing / or .).
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '@'
+            && (i == 0 || chars[i - 1].is_whitespace())
+            && i + 1 < chars.len()
+            && !chars[i + 1].is_whitespace()
+        {
+            // Collect the path.
+            let start = i + 1;
+            let mut end = start;
+            while end < chars.len() && !chars[end].is_whitespace() {
+                end += 1;
+            }
+            let path_str: String = chars[start..end].iter().collect();
+
+            // Only expand if it looks like a file path (contains / or .).
+            if path_str.contains('/') || path_str.contains('.') {
+                let full_path = std::path::Path::new(cwd).join(&path_str);
+                if full_path.exists() && full_path.is_file() {
+                    // Add text before the @reference.
+                    let before: String = chars[last_end..i].iter().collect();
+                    result.push_str(&before);
+
+                    // Read and inline the file.
+                    match std::fs::read_to_string(&full_path) {
+                        Ok(content) => {
+                            let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                            // Truncate large files.
+                            let display = if content.len() > 50_000 {
+                                format!(
+                                    "{}...\n(truncated, {} bytes total)",
+                                    &content[..50_000],
+                                    content.len()
+                                )
+                            } else {
+                                content
+                            };
+                            result.push_str(&format!(
+                                "\n\nContents of {path_str}:\n```{ext}\n{display}\n```\n"
+                            ));
+                        }
+                        Err(_) => {
+                            result.push('@');
+                            result.push_str(&path_str);
+                        }
+                    }
+                    last_end = end;
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Append remaining text.
+    let remaining: String = chars[last_end..].iter().collect();
+    result.push_str(&remaining);
+    result
 }
