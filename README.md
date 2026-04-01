@@ -28,7 +28,8 @@ $ agent
 - **Private.** Runs locally. No telemetry. Your code never leaves your machine except for the LLM API call.
 - **Extensible.** Connect external tools via MCP servers, write custom skills as markdown files, build plugins as TOML packages.
 - **Safe.** Every tool call goes through a permission system. Plan mode locks the agent to read-only. Configurable rules per tool and pattern.
-- **Provider-agnostic.** Works with 9 providers out of the box. Swap models with `--model` or `/model`.
+- **Provider-agnostic.** Works with 11 providers out of the box, including AWS Bedrock and Google Vertex AI. Swap models with `--model` or `/model`.
+- **Themed.** 6 color themes (dark, light, muted, ANSI-only, auto-detect). Semantic colors across all UI elements.
 
 ## Supported Models
 
@@ -104,7 +105,7 @@ The REPL supports tab completion for `/` commands, inline hints, vi/emacs editin
 
 ## What It Can Do
 
-The agent has 30 built-in tools and 35+ slash commands. Here are the highlights:
+The agent has 31 built-in tools and 42 slash commands. Here are the highlights:
 
 **Read and understand code:**
 ```
@@ -317,6 +318,42 @@ Persistent context that carries across sessions:
 
 - **Project memory:** `.agent/AGENTS.md` in your repo root. Loaded automatically.
 - **User memory:** `~/.config/agent-code/memory/MEMORY.md`. Personal preferences and patterns.
+
+### Enterprise / Security
+
+```toml
+[security]
+# Restrict directories the agent can access
+additional_directories = ["/home/shared/docs"]
+
+# Control which MCP servers are allowed
+mcp_server_allowlist = ["github", "filesystem"]
+mcp_server_denylist = ["untrusted-server"]
+
+# Lock down permissions
+disable_bypass_permissions = true
+
+# Restrict env var access
+env_allowlist = ["HOME", "PATH", "EDITOR"]
+```
+
+### Feature Flags
+
+All features enabled by default. Toggle in config:
+
+```toml
+[features]
+token_budget = true          # Per-turn cost warnings
+commit_attribution = true    # Co-author lines in commits
+compaction_reminders = true  # System message after compaction
+unattended_retry = true      # Extended retry in one-shot mode
+history_snip = true          # /snip command
+auto_theme = true            # System dark/light detection
+fork_conversation = true     # /fork command
+extract_memories = true      # Background memory extraction
+context_collapse = true      # Auto-collapse on compaction
+reactive_compact = true      # Tight-budget auto-compact
+```
 
 ## Contributing
 

@@ -761,6 +761,55 @@ pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
          - Memory is a hint — always verify against current state before acting on it\n",
     );
 
+    // Detailed tool usage examples and workflow patterns.
+    prompt.push_str(
+        "# Tool usage patterns\n\n\
+         Common patterns for effective tool use:\n\n\
+         **Read before edit**: Always read a file before editing it. This ensures you \
+         understand the current state and can make targeted changes.\n\
+         ```\n\
+         1. FileRead file_path → understand structure\n\
+         2. FileEdit old_string, new_string → targeted change\n\
+         ```\n\n\
+         **Search then act**: Use Glob to find files, Grep to find content, then read/edit.\n\
+         ```\n\
+         1. Glob **/*.rs → find Rust files\n\
+         2. Grep pattern path → find specific code\n\
+         3. FileRead → read the match\n\
+         4. FileEdit → make the change\n\
+         ```\n\n\
+         **Parallel tool calls**: When you need to read multiple independent files or run \
+         independent searches, make all the tool calls in one response. Don't serialize \
+         independent operations.\n\n\
+         **Test after change**: After editing code, run tests to verify the change works.\n\
+         ```\n\
+         1. FileEdit → make change\n\
+         2. Bash cargo test / pytest / npm test → verify\n\
+         3. If tests fail, read the error, fix, re-test\n\
+         ```\n\n\
+         # Error recovery\n\n\
+         When something goes wrong:\n\
+         - **Tool not found**: Use ToolSearch to find the right tool name.\n\
+         - **Permission denied**: Explain why the action is needed, ask the user to approve.\n\
+         - **File not found**: Use Glob to find the correct path. Check for typos.\n\
+         - **Edit failed (not unique)**: Provide more surrounding context in old_string, \
+           or use replace_all=true if renaming.\n\
+         - **Command failed**: Read the full error message. Don't retry the same command. \
+           Diagnose the root cause first.\n\
+         - **Context too large**: The system will auto-compact. If you need specific \
+           information from before compaction, re-read the relevant files.\n\
+         - **Rate limited**: The system will auto-retry with backoff. Just wait.\n\n\
+         # Common workflows\n\n\
+         **Bug fix**: Read the failing test → read the source code it tests → \
+         identify the bug → fix it → run the test → confirm it passes.\n\n\
+         **New feature**: Read existing patterns in the codebase → create or edit files → \
+         add tests → run tests → update docs if needed.\n\n\
+         **Code review**: Read the diff → identify issues (bugs, security, style) → \
+         report findings with file:line references.\n\n\
+         **Refactor**: Search for all usages of the symbol → plan the changes → \
+         edit each file → run tests to verify nothing broke.\n\n",
+    );
+
     // MCP server instructions (dynamic, per-server).
     if !state.config.mcp_servers.is_empty() {
         prompt.push_str("# MCP Servers\n\n");

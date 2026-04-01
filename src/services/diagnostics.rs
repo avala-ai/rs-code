@@ -174,7 +174,99 @@ pub async fn run_all(cwd: &Path, config: &crate::config::Config) -> Vec<Check> {
         ));
     }
 
-    // 7. Disk space (warn if < 1GB free).
+    // 7. API connectivity test.
+    if config.api.api_key.is_some() {
+        let url = format!("{}/models", config.api.base_url);
+        match reqwest::Client::new()
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(5))
+            .header(
+                "Authorization",
+                format!("Bearer {}", config.api.api_key.as_deref().unwrap_or("")),
+            )
+            .header("x-api-key", config.api.api_key.as_deref().unwrap_or(""))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() || status.as_u16() == 200 {
+                    checks.push(Check::pass(
+                        "api:connectivity",
+                        &format!("API reachable ({})", config.api.base_url),
+                    ));
+                } else if status.as_u16() == 401 || status.as_u16() == 403 {
+                    checks.push(Check::fail(
+                        "api:connectivity",
+                        &format!("API key rejected (HTTP {})", status.as_u16()),
+                    ));
+                } else {
+                    checks.push(Check::warn(
+                        "api:connectivity",
+                        &format!("API responded with HTTP {}", status.as_u16()),
+                    ));
+                }
+            }
+            Err(e) => {
+                let msg = if e.is_timeout() {
+                    "API unreachable (timeout after 5s)".to_string()
+                } else if e.is_connect() {
+                    format!("Cannot connect to {}", config.api.base_url)
+                } else {
+                    format!("API error: {e}")
+                };
+                checks.push(Check::fail("api:connectivity", &msg));
+            }
+        }
+    }
+
+    // 8. MCP server health check.
+    for (name, entry) in &config.mcp_servers {
+        if let Some(ref cmd) = entry.command {
+            // Check if the command binary exists.
+            let binary = cmd.split_whitespace().next().unwrap_or(cmd);
+            if let Ok(output) = tokio::process::Command::new("which")
+                .arg(binary)
+                .output()
+                .await
+            {
+                if output.status.success() {
+                    checks.push(Check::pass(
+                        &format!("mcp:{name}"),
+                        &format!("MCP server '{name}' binary found: {binary}"),
+                    ));
+                } else {
+                    checks.push(Check::fail(
+                        &format!("mcp:{name}"),
+                        &format!("MCP server '{name}' binary not found: {binary}"),
+                    ));
+                }
+            }
+        } else if let Some(ref url) = entry.url {
+            // Check if the SSE endpoint is reachable.
+            match reqwest::Client::new()
+                .get(url)
+                .timeout(std::time::Duration::from_secs(3))
+                .send()
+                .await
+            {
+                Ok(_) => {
+                    checks.push(Check::pass(
+                        &format!("mcp:{name}"),
+                        &format!("MCP server '{name}' reachable at {url}"),
+                    ));
+                }
+                Err(_) => {
+                    checks.push(Check::fail(
+                        &format!("mcp:{name}"),
+                        &format!("MCP server '{name}' unreachable at {url}"),
+                    ));
+                }
+            }
+        }
+    }
+
+    // 9. Disk space (warn if < 1GB free).
     // Simple check via df.
     if let Ok(output) = tokio::process::Command::new("df")
         .args(["-BG", "."])
