@@ -100,6 +100,16 @@ async fn main() -> anyhow::Result<()> {
         std::env::set_current_dir(cwd)?;
     }
 
+    // Run first-time setup wizard if no config exists.
+    if cli.prompt.is_none()
+        && ui::setup::needs_setup()
+        && let Some(result) = ui::setup::run_setup()
+        && !result.api_key.is_empty()
+    {
+        // SAFETY: single-threaded at this point, before tokio runtime starts.
+        unsafe { std::env::set_var("AGENT_CODE_API_KEY", &result.api_key) };
+    }
+
     // Load configuration (files + env + CLI overrides).
     let mut config = Config::load()?;
     if let Some(ref url) = cli.api_base_url {

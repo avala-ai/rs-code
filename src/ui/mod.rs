@@ -9,3 +9,4 @@ pub mod keymap;
 pub mod prompt;
 pub mod render;
 pub mod repl;
+pub mod setup;
