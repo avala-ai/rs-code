@@ -220,6 +220,24 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "rewind",
+        aliases: &["undo"],
+        description: "Undo the last assistant turn (removes last assistant + tool messages)",
+        hidden: false,
+    },
+    Command {
+        name: "color",
+        aliases: &[],
+        description: "Switch color theme mid-session",
+        hidden: false,
+    },
+    Command {
+        name: "config",
+        aliases: &[],
+        description: "Show current configuration",
+        hidden: false,
+    },
+    Command {
         name: "snip",
         aliases: &[],
         description: "Remove a range of messages from history (e.g., /snip 3-7)",
@@ -679,6 +697,87 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                  or Glob for pattern matching."
                 .into(),
         ),
+        Some("rewind") => {
+            let messages = &mut engine.state_mut().messages;
+            // Remove messages from the end until we've removed the last assistant turn.
+            let mut removed = 0;
+            let mut found_assistant = false;
+            while let Some(msg) = messages.last() {
+                match msg {
+                    crate::llm::message::Message::Assistant(_) => {
+                        messages.pop();
+                        removed += 1;
+                        found_assistant = true;
+                    }
+                    crate::llm::message::Message::User(u) if found_assistant => {
+                        // Also remove the user message that triggered the turn.
+                        if !u.is_compact_summary {
+                            messages.pop();
+                            removed += 1;
+                        }
+                        break;
+                    }
+                    _ => {
+                        if found_assistant {
+                            break;
+                        }
+                        messages.pop();
+                        removed += 1;
+                    }
+                }
+            }
+            if removed > 0 {
+                println!("Rewound {removed} message(s). Last turn undone.");
+            } else {
+                println!("Nothing to rewind.");
+            }
+            CommandResult::Handled
+        }
+        Some("color") => {
+            let themes = [
+                "midnight",
+                "daybreak",
+                "midnight-muted",
+                "daybreak-muted",
+                "terminal",
+                "auto",
+            ];
+            if let Some(name) = args {
+                if themes.contains(&name) {
+                    engine.state_mut().config.ui.theme = name.to_string();
+                    println!("Theme set to: {name}");
+                } else {
+                    println!("Unknown theme. Available: {}", themes.join(", "));
+                }
+            } else {
+                println!("Current theme: {}", engine.state().config.ui.theme);
+                println!("Available: {}", themes.join(", "));
+                println!("Usage: /color <theme>");
+            }
+            CommandResult::Handled
+        }
+        Some("config") => {
+            let config = &engine.state().config;
+            println!("API:");
+            println!("  base_url: {}", config.api.base_url);
+            println!("  model: {}", config.api.model);
+            println!("  max_output_tokens: {:?}", config.api.max_output_tokens);
+            println!("  timeout: {}s", config.api.timeout_secs);
+            println!("  max_retries: {}", config.api.max_retries);
+            if let Some(max_cost) = config.api.max_cost_usd {
+                println!("  max_cost: ${:.2}", max_cost);
+            }
+            println!("\nPermissions:");
+            println!("  mode: {:?}", config.permissions.default_mode);
+            println!("  rules: {}", config.permissions.rules.len());
+            println!("\nUI:");
+            println!("  theme: {}", config.ui.theme);
+            println!("  edit_mode: {}", config.ui.edit_mode);
+            println!("  markdown: {}", config.ui.markdown);
+            println!("\nMCP servers: {}", config.mcp_servers.len());
+            println!("Hooks: {}", config.hooks.len());
+            CommandResult::Handled
+        }
         Some("snip") => {
             if !engine.state().config.features.history_snip {
                 println!("Feature disabled. Enable with: [features] history_snip = true");

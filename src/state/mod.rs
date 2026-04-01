@@ -76,24 +76,13 @@ impl AppState {
     }
 }
 
-/// Rough cost estimation based on model and token counts.
+/// Cost estimation using the per-model pricing database.
 fn estimate_cost(usage: &Usage, model: &str) -> f64 {
-    // Approximate pricing per million tokens (input, output).
-    let (input_price, output_price) = if model.contains("opus") {
-        (15.0, 75.0)
-    } else if model.contains("sonnet") {
-        (3.0, 15.0)
-    } else if model.contains("haiku") {
-        (0.25, 1.25)
-    } else {
-        (3.0, 15.0) // default to mid-tier
-    };
-
-    let input_cost = (usage.input_tokens as f64 / 1_000_000.0) * input_price;
-    let output_cost = (usage.output_tokens as f64 / 1_000_000.0) * output_price;
-    let cache_write_cost =
-        (usage.cache_creation_input_tokens as f64 / 1_000_000.0) * input_price * 1.25;
-    let cache_read_cost = (usage.cache_read_input_tokens as f64 / 1_000_000.0) * input_price * 0.1;
-
-    input_cost + output_cost + cache_write_cost + cache_read_cost
+    crate::services::pricing::calculate_cost(
+        model,
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_input_tokens,
+        usage.cache_creation_input_tokens,
+    )
 }
