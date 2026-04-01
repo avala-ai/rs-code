@@ -297,6 +297,7 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     let rl_config = rustyline::Config::builder()
         .edit_mode(input_mode.to_edit_mode())
         .completion_type(rustyline::config::CompletionType::List)
+        .bracketed_paste(true)
         .build();
     let mut rl =
         rustyline::Editor::<CommandCompleter, rustyline::history::DefaultHistory>::with_config(

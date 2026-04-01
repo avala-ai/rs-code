@@ -397,14 +397,20 @@ impl QueryEngine {
                 }
             };
 
-            // Step 4: Stream response, submitting tool_use blocks for
-            // overlapped execution as they complete.
+            // Step 4: Stream response. Start executing read-only tools
+            // as their input completes (streaming tool execution).
             let mut content_blocks = Vec::new();
             let mut usage = Usage::default();
             let mut stop_reason: Option<StopReason> = None;
             let mut got_error = false;
             let mut error_text = String::new();
-            let mut _pending_tool_count = 0usize;
+
+            // Streaming tool handles: tools kicked off during streaming.
+            let mut streaming_tool_handles: Vec<(
+                String,
+                String,
+                tokio::task::JoinHandle<crate::tools::ToolResult>,
+            )> = Vec::new();
 
             while let Some(event) = rx.recv().await {
                 match event {
@@ -413,13 +419,52 @@ impl QueryEngine {
                     }
                     StreamEvent::ContentBlockComplete(block) => {
                         if let ContentBlock::ToolUse {
+                            ref id,
                             ref name,
                             ref input,
-                            ..
                         } = block
                         {
                             sink.on_tool_start(name, input);
-                            _pending_tool_count += 1;
+
+                            // Start read-only tools immediately during streaming.
+                            if let Some(tool) = self.tools.get(name)
+                                && tool.is_read_only()
+                                && tool.is_concurrency_safe()
+                            {
+                                let tool = tool.clone();
+                                let input = input.clone();
+                                let cwd = std::path::PathBuf::from(&self.state.cwd);
+                                let cancel = self.cancel.clone();
+                                let perm = self.permissions.clone();
+                                let tool_id = id.clone();
+                                let tool_name = name.clone();
+
+                                let handle = tokio::spawn(async move {
+                                    match tool
+                                        .call(
+                                            input,
+                                            &ToolContext {
+                                                cwd,
+                                                cancel,
+                                                permission_checker: perm.clone(),
+                                                verbose: false,
+                                                plan_mode: false,
+                                                file_cache: None,
+                                                denial_tracker: None,
+                                                task_manager: None,
+                                                session_allows: None,
+                                                permission_prompter: None,
+                                            },
+                                        )
+                                        .await
+                                    {
+                                        Ok(r) => r,
+                                        Err(e) => crate::tools::ToolResult::error(e.to_string()),
+                                    }
+                                });
+
+                                streaming_tool_handles.push((tool_id, tool_name, handle));
+                            }
                         }
                         if let ContentBlock::Thinking { ref thinking, .. } = block {
                             sink.on_thinking(thinking);
@@ -582,6 +627,28 @@ impl QueryEngine {
                 permission_prompter: self.permission_prompter.clone(),
             };
 
+            // Collect streaming tool results first.
+            let streaming_ids: std::collections::HashSet<String> = streaming_tool_handles
+                .iter()
+                .map(|(id, _, _)| id.clone())
+                .collect();
+
+            let mut streaming_results = Vec::new();
+            for (id, name, handle) in streaming_tool_handles.drain(..) {
+                match handle.await {
+                    Ok(result) => streaming_results.push(crate::tools::executor::ToolCallResult {
+                        tool_use_id: id,
+                        tool_name: name,
+                        result,
+                    }),
+                    Err(e) => streaming_results.push(crate::tools::executor::ToolCallResult {
+                        tool_use_id: id,
+                        tool_name: name,
+                        result: crate::tools::ToolResult::error(format!("Task failed: {e}")),
+                    }),
+                }
+            }
+
             // Fire pre-tool-use hooks.
             for call in &tool_calls {
                 self.hooks
@@ -589,9 +656,24 @@ impl QueryEngine {
                     .await;
             }
 
-            let results =
-                execute_tool_calls(&tool_calls, self.tools.all(), &tool_ctx, &self.permissions)
-                    .await;
+            // Execute remaining tools (ones not started during streaming).
+            let remaining_calls: Vec<_> = tool_calls
+                .iter()
+                .filter(|c| !streaming_ids.contains(&c.id))
+                .cloned()
+                .collect();
+
+            let mut results = streaming_results;
+            if !remaining_calls.is_empty() {
+                let batch_results = execute_tool_calls(
+                    &remaining_calls,
+                    self.tools.all(),
+                    &tool_ctx,
+                    &self.permissions,
+                )
+                .await;
+                results.extend(batch_results);
+            }
 
             // Step 9: Inject tool results + fire post-tool-use hooks.
             for result in &results {
