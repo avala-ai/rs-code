@@ -563,6 +563,21 @@ impl QueryEngine {
 
             // Step 9: Inject tool results + fire post-tool-use hooks.
             for result in &results {
+                // Handle plan mode state transitions.
+                if !result.result.is_error {
+                    match result.tool_name.as_str() {
+                        "EnterPlanMode" => {
+                            self.state.plan_mode = true;
+                            info!("Plan mode enabled");
+                        }
+                        "ExitPlanMode" => {
+                            self.state.plan_mode = false;
+                            info!("Plan mode disabled");
+                        }
+                        _ => {}
+                    }
+                }
+
                 sink.on_tool_result(&result.tool_name, &result.result);
 
                 // Fire post-tool-use hooks.
