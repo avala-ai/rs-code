@@ -16,7 +16,7 @@ use tracing_subscriber::EnvFilter;
 use std::sync::Arc;
 
 use agent_code_lib::config::Config;
-use agent_code_lib::llm::provider::{ProviderKind, detect_provider};
+use agent_code_lib::llm::provider::{ProviderKind, WireFormat, detect_provider};
 use agent_code_lib::permissions::PermissionChecker;
 use agent_code_lib::query::QueryEngine;
 use agent_code_lib::state::AppState;
@@ -180,37 +180,21 @@ async fn main() -> anyhow::Result<()> {
         _ => detect_provider(&config.api.model, &config.api.base_url),
     };
 
-    // Override base URL if the detected provider doesn't match the configured URL.
-    if cli.api_base_url.is_none() {
-        let default_url = match provider_kind {
-            ProviderKind::Anthropic => "https://api.anthropic.com/v1",
-            ProviderKind::Bedrock | ProviderKind::Vertex => &config.api.base_url,
-            ProviderKind::OpenAi => "https://api.openai.com/v1",
-            ProviderKind::Xai => "https://api.x.ai/v1",
-            ProviderKind::Google => "https://generativelanguage.googleapis.com/v1beta/openai",
-            ProviderKind::DeepSeek => "https://api.deepseek.com/v1",
-            ProviderKind::Groq => "https://api.groq.com/openai/v1",
-            ProviderKind::Mistral => "https://api.mistral.ai/v1",
-            ProviderKind::Together => "https://api.together.xyz/v1",
-            ProviderKind::OpenAiCompatible => &config.api.base_url,
-        };
+    // Override base URL if the detected provider has a known default.
+    if cli.api_base_url.is_none()
+        && let Some(default_url) = provider_kind.default_base_url()
+    {
         config.api.base_url = default_url.to_string();
     }
-    let llm: Arc<dyn agent_code_lib::llm::provider::Provider> = match provider_kind {
-        ProviderKind::Anthropic | ProviderKind::Bedrock | ProviderKind::Vertex => Arc::new(
-            agent_code_lib::llm::anthropic::AnthropicProvider::new(&config.api.base_url, api_key),
-        ),
-        // All other providers use the OpenAI-compatible wire format.
-        ProviderKind::OpenAi
-        | ProviderKind::Xai
-        | ProviderKind::Google
-        | ProviderKind::DeepSeek
-        | ProviderKind::Groq
-        | ProviderKind::Mistral
-        | ProviderKind::Together
-        | ProviderKind::OpenAiCompatible => Arc::new(
-            agent_code_lib::llm::openai::OpenAiProvider::new(&config.api.base_url, api_key),
-        ),
+    let llm: Arc<dyn agent_code_lib::llm::provider::Provider> = match provider_kind.wire_format() {
+        WireFormat::Anthropic => Arc::new(agent_code_lib::llm::anthropic::AnthropicProvider::new(
+            &config.api.base_url,
+            api_key,
+        )),
+        WireFormat::OpenAiCompatible => Arc::new(agent_code_lib::llm::openai::OpenAiProvider::new(
+            &config.api.base_url,
+            api_key,
+        )),
     };
     tracing::info!(
         "Using {:?} provider at {}",

@@ -23,6 +23,7 @@ impl ToolRegistry {
         registry.register(Arc::new(super::file_read::FileReadTool));
         registry.register(Arc::new(super::file_write::FileWriteTool));
         registry.register(Arc::new(super::file_edit::FileEditTool));
+        registry.register(Arc::new(super::multi_edit::MultiEditTool));
         registry.register(Arc::new(super::grep::GrepTool));
         registry.register(Arc::new(super::glob::GlobTool));
         registry.register(Arc::new(super::notebook_edit::NotebookEditTool));

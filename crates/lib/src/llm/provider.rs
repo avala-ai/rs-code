@@ -157,6 +157,15 @@ pub fn detect_provider(model: &str, base_url: &str) -> ProviderKind {
     ProviderKind::OpenAiCompatible
 }
 
+/// The two wire formats that cover the entire LLM ecosystem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireFormat {
+    /// Anthropic Messages API (Claude models, Bedrock, Vertex).
+    Anthropic,
+    /// OpenAI Chat Completions (GPT, Groq, Together, Ollama, DeepSeek, etc.).
+    OpenAiCompatible,
+}
+
 /// Provider kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -171,6 +180,56 @@ pub enum ProviderKind {
     Mistral,
     Together,
     OpenAiCompatible,
+}
+
+impl ProviderKind {
+    /// Which wire format this provider uses.
+    pub fn wire_format(&self) -> WireFormat {
+        match self {
+            Self::Anthropic | Self::Bedrock | Self::Vertex => WireFormat::Anthropic,
+            Self::OpenAi
+            | Self::Xai
+            | Self::Google
+            | Self::DeepSeek
+            | Self::Groq
+            | Self::Mistral
+            | Self::Together
+            | Self::OpenAiCompatible => WireFormat::OpenAiCompatible,
+        }
+    }
+
+    /// The default base URL for this provider, or `None` for providers
+    /// whose URL must come from user configuration (Bedrock, Vertex,
+    /// and generic OpenAI-compatible endpoints).
+    pub fn default_base_url(&self) -> Option<&str> {
+        match self {
+            Self::Anthropic => Some("https://api.anthropic.com/v1"),
+            Self::OpenAi => Some("https://api.openai.com/v1"),
+            Self::Xai => Some("https://api.x.ai/v1"),
+            Self::Google => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
+            Self::DeepSeek => Some("https://api.deepseek.com/v1"),
+            Self::Groq => Some("https://api.groq.com/openai/v1"),
+            Self::Mistral => Some("https://api.mistral.ai/v1"),
+            Self::Together => Some("https://api.together.xyz/v1"),
+            // These require user-supplied URLs.
+            Self::Bedrock | Self::Vertex | Self::OpenAiCompatible => None,
+        }
+    }
+
+    /// The environment variable name conventionally used for this provider's API key.
+    pub fn env_var_name(&self) -> &str {
+        match self {
+            Self::Anthropic | Self::Bedrock | Self::Vertex => "ANTHROPIC_API_KEY",
+            Self::OpenAi => "OPENAI_API_KEY",
+            Self::Xai => "XAI_API_KEY",
+            Self::Google => "GOOGLE_API_KEY",
+            Self::DeepSeek => "DEEPSEEK_API_KEY",
+            Self::Groq => "GROQ_API_KEY",
+            Self::Mistral => "MISTRAL_API_KEY",
+            Self::Together => "TOGETHER_API_KEY",
+            Self::OpenAiCompatible => "OPENAI_API_KEY",
+        }
+    }
 }
 
 #[cfg(test)]
