@@ -278,6 +278,8 @@ impl QueryEngine {
                 max_tokens: self.state.config.api.max_output_tokens.unwrap_or(16384),
                 temperature: None,
                 enable_caching: true,
+                tool_choice: Default::default(),
+                metadata: None,
             };
 
             let mut rx = match self.llm.stream(&request).await {
@@ -333,6 +335,7 @@ impl QueryEngine {
             // overlapped execution as they complete.
             let mut content_blocks = Vec::new();
             let mut usage = Usage::default();
+            let mut stop_reason: Option<StopReason> = None;
             let mut got_error = false;
             let mut error_text = String::new();
             let mut _pending_tool_count = 0usize;
@@ -359,9 +362,10 @@ impl QueryEngine {
                     }
                     StreamEvent::Done {
                         usage: u,
-                        stop_reason: _,
+                        stop_reason: sr,
                     } => {
                         usage = u;
+                        stop_reason = sr;
                         sink.on_usage(&usage);
                     }
                     StreamEvent::Error(msg) => {
@@ -380,7 +384,7 @@ impl QueryEngine {
                 content: content_blocks.clone(),
                 model: Some(model.clone()),
                 usage: Some(usage.clone()),
-                stop_reason: None,
+                stop_reason: stop_reason.clone(),
                 request_id: None,
             });
             self.state.push_message(assistant_msg);
@@ -433,6 +437,24 @@ impl QueryEngine {
                     self.state.push_message(recovery_msg);
                     continue;
                 }
+            }
+
+            // Step 6b: Handle max_tokens stop reason (escalate and continue).
+            if matches!(stop_reason, Some(StopReason::MaxTokens))
+                && !got_error
+                && content_blocks
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Text { .. }))
+                && max_output_recovery_count < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT
+            {
+                max_output_recovery_count += 1;
+                info!(
+                    "Max tokens stop reason — recovery attempt {}/{}",
+                    max_output_recovery_count, MAX_OUTPUT_TOKENS_RECOVERY_LIMIT
+                );
+                let recovery_msg = compact::max_output_recovery_message();
+                self.state.push_message(recovery_msg);
+                continue;
             }
 
             // Step 7: Extract tool calls from the response.
@@ -614,42 +636,80 @@ pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
 
     // Guidelines and safety framework.
     prompt.push_str(
-        "# Working with code\n\n\
+        "# Using tools\n\n\
+         Use dedicated tools instead of shell commands when available:\n\
+         - File search: Glob (not find or ls)\n\
+         - Content search: Grep (not grep or rg)\n\
+         - Read files: FileRead (not cat/head/tail)\n\
+         - Edit files: FileEdit (not sed/awk)\n\
+         - Write files: FileWrite (not echo/cat with redirect)\n\
+         - Reserve Bash for system commands and operations that require shell execution.\n\
+         - Break complex tasks into steps. Use multiple tool calls in parallel when independent.\n\
+         - Use the Agent tool for complex multi-step research or tasks that benefit from isolation.\n\n\
+         # Working with code\n\n\
          - Read files before editing them. Understand existing code before suggesting changes.\n\
          - Prefer editing existing files over creating new ones to avoid file bloat.\n\
-         - Use the dedicated tool instead of shell commands when one exists:\n\
-           - File search: use Glob (not find or ls)\n\
-           - Content search: use Grep (not grep or rg)\n\
-           - Read files: use FileRead (not cat/head/tail)\n\
-           - Edit files: use FileEdit (not sed/awk)\n\
-           - Write files: use FileWrite (not echo/cat)\n\
          - Only make changes that were requested. Don't add features, refactor, add comments, \
            or make \"improvements\" beyond the ask.\n\
          - Don't add error handling for scenarios that can't happen. Don't design for \
            hypothetical future requirements.\n\
-         - When referencing code, include file_path:line_number.\n\n\
+         - When referencing code, include file_path:line_number.\n\
+         - Be careful not to introduce security vulnerabilities (command injection, XSS, SQL injection, \
+           OWASP top 10). If you notice insecure code you wrote, fix it immediately.\n\
+         - Don't add docstrings, comments, or type annotations to code you didn't change.\n\
+         - Three similar lines of code is better than a premature abstraction.\n\n\
+         # Git safety protocol\n\n\
+         - NEVER update the git config.\n\
+         - NEVER run destructive git commands (push --force, reset --hard, checkout ., restore ., \
+           clean -f, branch -D) unless the user explicitly requests them.\n\
+         - NEVER skip hooks (--no-verify, --no-gpg-sign) unless the user explicitly requests it.\n\
+         - NEVER force push to main/master. Warn the user if they request it.\n\
+         - Always create NEW commits rather than amending, unless the user explicitly requests amend. \
+           After hook failure, the commit did NOT happen — amend would modify the PREVIOUS commit.\n\
+         - When staging files, prefer adding specific files by name rather than git add -A or git add ., \
+           which can accidentally include sensitive files.\n\
+         - NEVER commit changes unless the user explicitly asks.\n\n\
+         # Committing changes\n\n\
+         When the user asks to commit:\n\
+         1. Run git status and git diff to see all changes.\n\
+         2. Run git log --oneline -5 to match the repository's commit message style.\n\
+         3. Draft a concise (1-2 sentence) commit message focusing on \"why\" not \"what\".\n\
+         4. Do not commit files that likely contain secrets (.env, credentials.json).\n\
+         5. Stage specific files, create the commit.\n\
+         6. If pre-commit hook fails, fix the issue and create a NEW commit.\n\n\
+         # Creating pull requests\n\n\
+         When the user asks to create a PR:\n\
+         1. Run git status, git diff, and git log to understand all changes on the branch.\n\
+         2. Analyze ALL commits (not just the latest) that will be in the PR.\n\
+         3. Draft a short title (under 70 chars) and detailed body with summary and test plan.\n\
+         4. Push to remote with -u flag if needed, then create PR using gh pr create.\n\
+         5. Return the PR URL when done.\n\n\
          # Executing actions safely\n\n\
          Consider the reversibility and blast radius of every action:\n\
          - Freely take local, reversible actions (editing files, running tests).\n\
-         - For hard-to-reverse actions (git push, deleting files, writing to shared systems), \
-           confirm with the user first.\n\
-         - Never skip pre-commit hooks (--no-verify) unless explicitly asked.\n\
-         - Prefer new git commits over amending existing ones.\n\
-         - Never force-push to main/master without asking.\n\
-         - Don't commit .env files, credentials, or secrets.\n\
-         - Before running destructive commands (rm -rf, git reset --hard, DROP TABLE), \
-           explain what will happen and ask for confirmation.\n\n\
+         - For hard-to-reverse or shared-state actions, confirm with the user first:\n\
+           - Destructive: deleting files/branches, dropping tables, rm -rf, overwriting uncommitted changes.\n\
+           - Hard to reverse: force-pushing, git reset --hard, amending published commits.\n\
+           - Visible to others: pushing code, creating/commenting on PRs/issues, sending messages.\n\
+         - When you encounter an obstacle, do not use destructive actions as a shortcut. \
+           Identify root causes and fix underlying issues.\n\
+         - If you discover unexpected state (unfamiliar files, branches, config), investigate \
+           before deleting or overwriting — it may be the user's in-progress work.\n\n\
          # Response style\n\n\
          - Be concise. Lead with the answer or action, not the reasoning.\n\
          - Skip filler, preamble, and unnecessary transitions.\n\
          - Don't restate what the user said.\n\
          - If you can say it in one sentence, don't use three.\n\
-         - Focus output on: decisions that need input, status updates, and errors that change the plan.\n\n\
+         - Focus output on: decisions that need input, status updates, and errors that change the plan.\n\
+         - When referencing GitHub issues or PRs, use owner/repo#123 format.\n\
+         - Only use emojis if the user explicitly requests it.\n\n\
          # Memory\n\n\
          You can save information across sessions by writing memory files.\n\
          - Save to: ~/.config/agent-code/memory/ (one .md file per topic)\n\
          - Each file needs YAML frontmatter: name, description, type (user/feedback/project/reference)\n\
          - After writing a file, update MEMORY.md with a one-line pointer\n\
+         - Memory types: user (role, preferences), feedback (corrections, confirmations), \
+           project (decisions, deadlines), reference (external resources)\n\
          - Do NOT store: code patterns, git history, debugging solutions, anything derivable from code\n\
          - Memory is a hint — always verify against current state before acting on it\n",
     );

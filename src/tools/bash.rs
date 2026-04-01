@@ -24,26 +24,66 @@ const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 
 /// Commands that are potentially destructive and warrant a warning.
 const DESTRUCTIVE_PATTERNS: &[&str] = &[
+    // Filesystem destruction.
     "rm -rf",
     "rm -r /",
+    "rm -fr",
     "rmdir",
+    "shred",
+    // Git destructive operations.
     "git reset --hard",
     "git clean -f",
+    "git clean -d",
     "git push --force",
     "git push -f",
     "git checkout -- .",
+    "git checkout -f",
     "git restore .",
+    "git branch -D",
+    "git branch --delete --force",
+    "git stash drop",
+    "git stash clear",
+    "git rebase --abort",
+    // Database operations.
     "DROP TABLE",
     "DROP DATABASE",
+    "DROP SCHEMA",
     "DELETE FROM",
     "TRUNCATE",
+    // System operations.
     "shutdown",
     "reboot",
+    "halt",
+    "poweroff",
+    "init 0",
+    "init 6",
     "mkfs",
     "dd if=",
+    "dd of=/dev",
     "> /dev/sd",
+    "wipefs",
+    // Permission escalation.
     "chmod -R 777",
+    "chmod 777",
+    "chown -R",
+    // Process/system danger.
+    "kill -9",
+    "killall",
+    "pkill -9",
+    // Fork bomb.
     ":(){ :|:& };:",
+    // NPM/package destruction.
+    "npm publish",
+    "cargo publish",
+    // Docker cleanup.
+    "docker system prune -a",
+    "docker volume prune",
+    // Kubernetes.
+    "kubectl delete namespace",
+    "kubectl delete --all",
+    // Infrastructure.
+    "terraform destroy",
+    "pulumi destroy",
 ];
 
 /// Paths that should never be written to.
@@ -112,6 +152,35 @@ impl Tool for BashTool {
                      This command could cause data loss or system damage. \
                      If you're sure, ask the user for confirmation first."
                 ));
+            }
+        }
+
+        // Check for piped destructive patterns.
+        // Split on pipes and check each segment's base command.
+        for segment in command.split('|') {
+            let trimmed = segment.trim();
+            let base_cmd = trimmed.split_whitespace().next().unwrap_or("");
+            if matches!(
+                base_cmd,
+                "rm" | "shred" | "dd" | "mkfs" | "wipefs" | "shutdown" | "reboot" | "halt"
+            ) {
+                return Err(format!(
+                    "Potentially destructive command in pipe: '{base_cmd}'. \
+                     Ask the user for confirmation first."
+                ));
+            }
+        }
+
+        // Check for chained destructive commands (&&, ;).
+        for segment in cmd_lower.split("&&").flat_map(|s| s.split(';')) {
+            let trimmed = segment.trim();
+            for pattern in DESTRUCTIVE_PATTERNS {
+                if trimmed.contains(&pattern.to_lowercase()) {
+                    return Err(format!(
+                        "Potentially destructive command in chain: contains '{pattern}'. \
+                         Ask the user for confirmation first."
+                    ));
+                }
             }
         }
 

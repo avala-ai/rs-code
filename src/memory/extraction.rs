@@ -102,6 +102,11 @@ fn build_extraction_prompt(new_message_count: usize, memory_dir: &Path) -> Strin
 /// Build a manifest of existing memory files with content previews.
 /// This lets the LLM check for duplicates and decide whether to
 /// update existing files or create new ones.
+/// Public access to the memory manifest for consolidation.
+pub fn build_memory_manifest_public(memory_dir: &Path) -> String {
+    build_memory_manifest(memory_dir)
+}
+
 fn build_memory_manifest(memory_dir: &Path) -> String {
     let headers = super::scanner::scan_memory_files(memory_dir);
     if headers.is_empty() {
@@ -222,6 +227,8 @@ pub async fn extract_memories_background(
         max_tokens: 2048,
         temperature: Some(0.0),
         enable_caching: false,
+        tool_choice: Default::default(),
+        metadata: None,
     };
 
     let result = match llm.stream(&request).await {

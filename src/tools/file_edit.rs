@@ -92,6 +92,19 @@ impl Tool for FileEditTool {
             ));
         }
 
+        // Check file size before reading (reject files > 1MB).
+        const MAX_EDIT_SIZE: u64 = 1_048_576;
+        if let Ok(meta) = tokio::fs::metadata(file_path).await
+            && meta.len() > MAX_EDIT_SIZE
+        {
+            return Err(ToolError::InvalidInput(format!(
+                "File too large for editing ({} bytes, max {}). \
+                 Consider using Bash with sed/awk for large files.",
+                meta.len(),
+                MAX_EDIT_SIZE
+            )));
+        }
+
         let content = tokio::fs::read_to_string(file_path)
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("Failed to read {file_path}: {e}")))?;

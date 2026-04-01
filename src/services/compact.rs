@@ -298,6 +298,8 @@ pub async fn compact_with_llm(
         max_tokens: 4096,
         temperature: None,
         enable_caching: false,
+        tool_choice: Default::default(),
+        metadata: None,
     };
 
     let mut rx = match llm.stream(&request).await {

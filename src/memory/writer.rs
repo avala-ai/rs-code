@@ -109,3 +109,41 @@ pub fn delete_memory(memory_dir: &Path, filename: &str) -> Result<(), String> {
 
     Ok(())
 }
+
+/// Rebuild MEMORY.md from the actual files in the memory directory.
+/// Scans all .md files (except MEMORY.md itself), reads their frontmatter,
+/// and regenerates the index.
+pub fn rebuild_index(memory_dir: &Path) -> Result<(), String> {
+    let headers = super::scanner::scan_memory_files(memory_dir);
+    let index_path = memory_dir.join("MEMORY.md");
+
+    let mut lines = Vec::new();
+    for h in &headers {
+        let name = h
+            .meta
+            .as_ref()
+            .map(|m| m.name.as_str())
+            .unwrap_or(&h.filename);
+        let desc = h
+            .meta
+            .as_ref()
+            .map(|m| m.description.as_str())
+            .unwrap_or("");
+
+        let mut line = format!("- [{}]({}) — {}", name, h.filename, desc);
+        if line.len() > MAX_INDEX_LINE_CHARS {
+            line.truncate(MAX_INDEX_LINE_CHARS - 3);
+            line.push_str("...");
+        }
+        lines.push(line);
+    }
+
+    if lines.len() > MAX_INDEX_LINES {
+        lines.truncate(MAX_INDEX_LINES);
+    }
+
+    let content = lines.join("\n") + "\n";
+    std::fs::write(&index_path, content).map_err(|e| format!("Failed to write index: {e}"))?;
+
+    Ok(())
+}

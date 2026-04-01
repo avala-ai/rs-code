@@ -220,6 +220,30 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "transcript",
+        aliases: &[],
+        description: "Show conversation transcript",
+        hidden: false,
+    },
+    Command {
+        name: "bug",
+        aliases: &[],
+        description: "Report a bug",
+        hidden: false,
+    },
+    Command {
+        name: "vim",
+        aliases: &["vi"],
+        description: "Switch to vi editing mode",
+        hidden: false,
+    },
+    Command {
+        name: "emacs",
+        aliases: &[],
+        description: "Switch to emacs editing mode",
+        hidden: false,
+    },
+    Command {
         name: "version",
         aliases: &[],
         description: "Show version information",
@@ -637,6 +661,89 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                  or Glob for pattern matching."
                 .into(),
         ),
+        Some("transcript") => {
+            let messages = &engine.state().messages;
+            if messages.is_empty() {
+                println!("No conversation yet.");
+            } else {
+                println!("Conversation ({} messages):\n", messages.len());
+                for (i, msg) in messages.iter().enumerate() {
+                    match msg {
+                        crate::llm::message::Message::User(u) => {
+                            let text: String = u
+                                .content
+                                .iter()
+                                .filter_map(|b| {
+                                    if let crate::llm::message::ContentBlock::Text { text } = b {
+                                        Some(text.as_str())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join("");
+                            let preview = if text.len() > 120 {
+                                format!("{}...", &text[..117])
+                            } else {
+                                text
+                            };
+                            println!("  [{i}] USER: {preview}");
+                        }
+                        crate::llm::message::Message::Assistant(a) => {
+                            let text: String = a
+                                .content
+                                .iter()
+                                .filter_map(|b| {
+                                    if let crate::llm::message::ContentBlock::Text { text } = b {
+                                        Some(text.as_str())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join("");
+                            let tool_count = a
+                                .content
+                                .iter()
+                                .filter(|b| {
+                                    matches!(b, crate::llm::message::ContentBlock::ToolUse { .. })
+                                })
+                                .count();
+                            let preview = if text.len() > 120 {
+                                format!("{}...", &text[..117])
+                            } else {
+                                text
+                            };
+                            let tools = if tool_count > 0 {
+                                format!(" (+{tool_count} tool calls)")
+                            } else {
+                                String::new()
+                            };
+                            println!("  [{i}] ASSISTANT: {preview}{tools}");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            CommandResult::Handled
+        }
+        Some("bug") => {
+            println!("To report a bug:");
+            println!("  https://github.com/avala-ai/agent-code/issues/new");
+            println!("\nInclude: agent version, OS, steps to reproduce.");
+            println!("Version: agent {}", env!("CARGO_PKG_VERSION"));
+            CommandResult::Handled
+        }
+        Some("vim") => {
+            engine.state_mut().config.ui.edit_mode = "vi".to_string();
+            println!("Editing mode set to vi. Takes effect on next session.");
+            CommandResult::Handled
+        }
+        Some("emacs") => {
+            engine.state_mut().config.ui.edit_mode = "emacs".to_string();
+            println!("Editing mode set to emacs. Takes effect on next session.");
+            CommandResult::Handled
+        }
         Some("version") => {
             println!("agent {}", env!("CARGO_PKG_VERSION"));
             CommandResult::Handled

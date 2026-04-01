@@ -182,6 +182,26 @@ impl OpenAiProvider {
 
         if !tools.is_empty() {
             body["tools"] = serde_json::Value::Array(tools);
+
+            // Tool choice.
+            use super::provider::ToolChoice;
+            match &request.tool_choice {
+                ToolChoice::Auto => {
+                    body["tool_choice"] = serde_json::json!("auto");
+                }
+                ToolChoice::Any => {
+                    body["tool_choice"] = serde_json::json!("required");
+                }
+                ToolChoice::None => {
+                    body["tool_choice"] = serde_json::json!("none");
+                }
+                ToolChoice::Specific(name) => {
+                    body["tool_choice"] = serde_json::json!({
+                        "type": "function",
+                        "function": { "name": name }
+                    });
+                }
+            }
         }
         if let Some(temp) = request.temperature {
             body["temperature"] = serde_json::json!(temp);

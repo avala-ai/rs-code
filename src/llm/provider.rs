@@ -28,6 +28,20 @@ pub trait Provider: Send + Sync {
     ) -> Result<mpsc::Receiver<StreamEvent>, ProviderError>;
 }
 
+/// Tool choice mode for controlling tool usage.
+#[derive(Debug, Clone, Default)]
+pub enum ToolChoice {
+    /// Model decides whether to use tools.
+    #[default]
+    Auto,
+    /// Model must use a tool.
+    Any,
+    /// Model must not use tools.
+    None,
+    /// Model must use a specific tool.
+    Specific(String),
+}
+
 /// A provider-agnostic request.
 pub struct ProviderRequest {
     pub messages: Vec<Message>,
@@ -37,6 +51,10 @@ pub struct ProviderRequest {
     pub max_tokens: u32,
     pub temperature: Option<f64>,
     pub enable_caching: bool,
+    /// Controls whether/how the model should use tools.
+    pub tool_choice: ToolChoice,
+    /// Metadata to send with the request (e.g., user_id for Anthropic).
+    pub metadata: Option<serde_json::Value>,
 }
 
 /// Provider-level errors.

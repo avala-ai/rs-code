@@ -9,7 +9,10 @@
 //! multiple agent sessions.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+
+use tracing::{info, warn};
 
 /// Minimum hours between consolidation runs.
 const MIN_HOURS_BETWEEN_RUNS: u64 = 24;
@@ -125,6 +128,156 @@ pub fn build_consolidation_prompt(memory_dir: &Path) -> String {
     prompt.push_str(&format!("\nMemory directory: {}\n", memory_dir.display()));
 
     prompt
+}
+
+/// Run the full consolidation pipeline via LLM.
+pub async fn run_consolidation(
+    memory_dir: &Path,
+    lock_path: &Path,
+    llm: Arc<dyn crate::llm::provider::Provider>,
+    model: &str,
+) {
+    let prompt = build_consolidation_prompt(memory_dir);
+
+    // Build a manifest of all current memory files.
+    let manifest = super::extraction::build_memory_manifest_public(memory_dir);
+    let full_prompt = format!(
+        "{prompt}\n\n{manifest}\n\n\
+         Analyze these memory files. For each action you want to take, output a JSON \
+         line with one of these formats:\n\
+         To delete a file: {{\"action\": \"delete\", \"filename\": \"file.md\"}}\n\
+         To update a file: {{\"action\": \"update\", \"filename\": \"file.md\", \
+         \"name\": \"Name\", \"description\": \"desc\", \"type\": \"user\", \
+         \"content\": \"new content\"}}\n\
+         To update the index: {{\"action\": \"reindex\"}}\n\n\
+         Output ONLY JSON lines, nothing else. If no changes needed, output nothing."
+    );
+
+    let request = crate::llm::provider::ProviderRequest {
+        messages: vec![crate::llm::message::user_message(&full_prompt)],
+        system_prompt: "You are a memory consolidation agent. You merge, prune, and \
+                        organize memory files. Be aggressive about removing stale or \
+                        duplicate content. Output only JSON lines."
+            .to_string(),
+        tools: vec![],
+        model: model.to_string(),
+        max_tokens: 4096,
+        temperature: Some(0.0),
+        enable_caching: false,
+        tool_choice: Default::default(),
+        metadata: None,
+    };
+
+    let result = match llm.stream(&request).await {
+        Ok(mut rx) => {
+            let mut output = String::new();
+            while let Some(event) = rx.recv().await {
+                if let crate::llm::stream::StreamEvent::TextDelta(text) = event {
+                    output.push_str(&text);
+                }
+            }
+            output
+        }
+        Err(e) => {
+            warn!("Memory consolidation API call failed: {e}");
+            rollback_lock(lock_path);
+            return;
+        }
+    };
+
+    // Process actions.
+    let mut actions_taken = 0;
+    for line in result.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+
+        if let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) {
+            let action = entry
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            match action {
+                "delete" => {
+                    if let Some(filename) = entry.get("filename").and_then(|v| v.as_str()) {
+                        let path = memory_dir.join(filename);
+                        if path.exists() {
+                            if let Err(e) = std::fs::remove_file(&path) {
+                                warn!("Failed to delete memory file {filename}: {e}");
+                            } else {
+                                info!("Consolidation: deleted {filename}");
+                                actions_taken += 1;
+                            }
+                        }
+                    }
+                }
+                "update" => {
+                    let filename = entry
+                        .get("filename")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown.md");
+                    let name = entry
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown");
+                    let description = entry
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let mem_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("user");
+                    let content = entry
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    if !content.is_empty() {
+                        let memory_type = match mem_type {
+                            "feedback" => Some(super::types::MemoryType::Feedback),
+                            "project" => Some(super::types::MemoryType::Project),
+                            "reference" => Some(super::types::MemoryType::Reference),
+                            _ => Some(super::types::MemoryType::User),
+                        };
+
+                        let meta = super::types::MemoryMeta {
+                            name: name.to_string(),
+                            description: description.to_string(),
+                            memory_type,
+                        };
+
+                        match super::writer::write_memory(memory_dir, filename, &meta, content) {
+                            Ok(_) => {
+                                info!("Consolidation: updated {filename}");
+                                actions_taken += 1;
+                            }
+                            Err(e) => {
+                                warn!("Failed to update memory file {filename}: {e}");
+                            }
+                        }
+                    }
+                }
+                "reindex" => {
+                    // Rebuild the index from existing files.
+                    if let Err(e) = super::writer::rebuild_index(memory_dir) {
+                        warn!("Failed to rebuild memory index: {e}");
+                    } else {
+                        info!("Consolidation: reindexed MEMORY.md");
+                        actions_taken += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if actions_taken > 0 {
+        info!("Memory consolidation complete: {actions_taken} actions taken");
+    } else {
+        info!("Memory consolidation: no changes needed");
+    }
+
+    release_lock(lock_path);
 }
 
 fn is_process_alive(pid: u32) -> bool {

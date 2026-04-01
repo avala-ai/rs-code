@@ -110,6 +110,34 @@ impl Provider for AnthropicProvider {
             body["temperature"] = serde_json::json!(temp);
         }
 
+        // Tool choice.
+        if !request.tools.is_empty() {
+            use super::provider::ToolChoice;
+            match &request.tool_choice {
+                ToolChoice::Auto => {
+                    body["tool_choice"] = serde_json::json!({"type": "auto"});
+                }
+                ToolChoice::Any => {
+                    body["tool_choice"] = serde_json::json!({"type": "any"});
+                }
+                ToolChoice::None => {
+                    // Anthropic doesn't have a "none" tool_choice — just omit tools.
+                    body.as_object_mut().unwrap().remove("tools");
+                }
+                ToolChoice::Specific(name) => {
+                    body["tool_choice"] = serde_json::json!({
+                        "type": "tool",
+                        "name": name
+                    });
+                }
+            }
+        }
+
+        // Metadata (e.g., user_id for analytics).
+        if let Some(ref meta) = request.metadata {
+            body["metadata"] = meta.clone();
+        }
+
         // Thinking configuration (adaptive or budgeted).
         let thinking_budget =
             crate::services::tokens::max_thinking_tokens_for_model(&request.model);

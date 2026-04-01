@@ -5,16 +5,82 @@
 //! Integrates markdown rendering, activity indicators, and permission
 //! prompts.
 
+use std::borrow::Cow;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use crossterm::style::Stylize;
+use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use rustyline::{Context, Helper};
 
 use crate::llm::message::Usage;
 use crate::query::{QueryEngine, StreamSink};
 use crate::tools::ToolResult;
 use crate::ui::activity::ActivityIndicator;
+
+/// Tab-completion helper for slash commands.
+struct CommandCompleter;
+
+impl Completer for CommandCompleter {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        // Only complete at the start of input for / commands.
+        if !line.starts_with('/') {
+            return Ok((0, vec![]));
+        }
+
+        let partial = &line[1..pos];
+        let matches: Vec<Pair> = crate::commands::COMMANDS
+            .iter()
+            .filter(|c| !c.hidden)
+            .filter(|c| c.name.starts_with(partial))
+            .map(|c| Pair {
+                display: format!("/{} — {}", c.name, c.description),
+                replacement: format!("/{}", c.name),
+            })
+            .collect();
+
+        // Start replacement from position 0 (replacing the whole /partial).
+        Ok((0, matches))
+    }
+}
+
+impl Hinter for CommandCompleter {
+    type Hint = String;
+
+    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<String> {
+        if !line.starts_with('/') || pos < 2 {
+            return None;
+        }
+
+        let partial = &line[1..pos];
+        crate::commands::COMMANDS
+            .iter()
+            .filter(|c| !c.hidden)
+            .find(|c| c.name.starts_with(partial) && c.name != partial)
+            .map(|c| c.name[partial.len()..].to_string())
+    }
+}
+
+impl Highlighter for CommandCompleter {
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        // Show hints in grey.
+        Cow::Owned(format!("\x1b[90m{hint}\x1b[0m"))
+    }
+}
+
+impl Validator for CommandCompleter {}
+impl Helper for CommandCompleter {}
 
 /// Stream sink that writes to the terminal with full rendering.
 struct TerminalSink {
@@ -174,9 +240,13 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     let _keybindings = super::keybindings::KeybindingRegistry::load();
     let rl_config = rustyline::Config::builder()
         .edit_mode(input_mode.to_edit_mode())
+        .completion_type(rustyline::config::CompletionType::List)
         .build();
     let mut rl =
-        rustyline::Editor::<(), rustyline::history::DefaultHistory>::with_config(rl_config)?;
+        rustyline::Editor::<CommandCompleter, rustyline::history::DefaultHistory>::with_config(
+            rl_config,
+        )?;
+    rl.set_helper(Some(CommandCompleter));
 
     // Generate a session ID for persistence. Clone for later use since
     // Stylize methods consume the String.
@@ -221,12 +291,15 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     println!();
     println!("{}", divider.dark_grey());
 
+    let mut ctrl_c_pending = false;
+
     loop {
         let sink = TerminalSink::new(verbose);
         let prompt = format!("{} ", "❯".dark_cyan().bold());
 
         match rl.readline(&prompt) {
             Ok(line) => {
+                ctrl_c_pending = false;
                 let mut input_buf = line.clone();
 
                 // Multi-line input: if line ends with \, keep reading.
@@ -284,23 +357,14 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                 if engine.state().is_query_active {
                     engine.cancel();
                     eprintln!("{}", "(cancelled)".dark_grey());
+                    ctrl_c_pending = false;
+                } else if ctrl_c_pending {
+                    // Second Ctrl+C at prompt — exit.
+                    break;
                 } else {
-                    // Not in a turn — Ctrl+C at the prompt means exit.
+                    // First Ctrl+C at prompt — show hint, continue.
                     eprintln!("{}", "(Ctrl+C again to exit, or type /exit)".dark_grey());
-                    // Wait for next input — if it's another Ctrl+C, break.
-                    match rl.readline(&format!("{} ", "❯".dark_cyan().bold())) {
-                        Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
-                        Ok(line) => {
-                            let input = line.trim();
-                            if !input.is_empty() {
-                                rl.add_history_entry(input).ok();
-                                // Process it normally on next loop iteration
-                                // by pushing it back... actually just continue.
-                            }
-                            continue;
-                        }
-                        Err(_) => break,
-                    }
+                    ctrl_c_pending = true;
                 }
             }
             Err(ReadlineError::Eof) => {

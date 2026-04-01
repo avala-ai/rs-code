@@ -124,16 +124,7 @@ async fn main() -> anyhow::Result<()> {
         session_env.shell,
     );
 
-    // Check if memory consolidation should run (background "dreaming").
-    if let Some(memory_dir) = memory::ensure_memory_dir()
-        && memory::consolidation::should_consolidate(&memory_dir)
-        && let Some(lock_path) = memory::consolidation::try_acquire_lock(&memory_dir)
-    {
-        tracing::info!("Memory consolidation due — would run dream agent here");
-        // Future: spawn a background consolidation agent.
-        // For now, just release the lock to update the timestamp.
-        memory::consolidation::release_lock(&lock_path);
-    }
+    // Memory consolidation check is deferred until after provider setup.
 
     // Load configuration (files + env + CLI overrides).
     let mut config = Config::load()?;
@@ -298,6 +289,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Build the query engine (agent loop).
+    let llm_for_consolidation = llm.clone();
     let mut engine = QueryEngine::new(
         llm,
         tool_registry,
@@ -311,6 +303,25 @@ async fn main() -> anyhow::Result<()> {
 
     // Load hooks from config.
     engine.load_hooks(&config.hooks);
+
+    // Run memory consolidation in the background if due.
+    if let Some(memory_dir) = memory::ensure_memory_dir()
+        && memory::consolidation::should_consolidate(&memory_dir)
+        && let Some(lock_path) = memory::consolidation::try_acquire_lock(&memory_dir)
+    {
+        let consolidation_llm = llm_for_consolidation;
+        let consolidation_model = config.api.model.clone();
+        tokio::spawn(async move {
+            tracing::info!("Memory consolidation starting (background)");
+            memory::consolidation::run_consolidation(
+                &memory_dir,
+                &lock_path,
+                consolidation_llm,
+                &consolidation_model,
+            )
+            .await;
+        });
+    }
 
     // Install Ctrl+C handler for graceful cancellation.
     engine.install_signal_handler();

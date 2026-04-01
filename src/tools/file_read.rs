@@ -35,6 +35,10 @@ impl Tool for FileReadTool {
                 "limit": {
                     "type": "integer",
                     "description": "Number of lines to read"
+                },
+                "pages": {
+                    "type": "string",
+                    "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Max 20 pages per request."
                 }
             }
         })
@@ -71,10 +75,26 @@ impl Tool for FileReadTool {
 
         let path = std::path::Path::new(file_path);
 
+        // Block device and virtual filesystem paths.
+        const BLOCKED_PREFIXES: &[&str] = &["/dev/", "/proc/", "/sys/"];
+        if BLOCKED_PREFIXES
+            .iter()
+            .any(|prefix| file_path.starts_with(prefix))
+        {
+            return Err(ToolError::InvalidInput(format!(
+                "Cannot read virtual/device file: {file_path}"
+            )));
+        }
+
+        let pages = input
+            .get("pages")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         // Handle binary/special file types.
         match path.extension().and_then(|e| e.to_str()) {
             Some("pdf") => {
-                return read_pdf(file_path).await;
+                return read_pdf(file_path, pages.as_deref()).await;
             }
             Some("ipynb") => {
                 return read_notebook(file_path).await;
@@ -144,12 +164,26 @@ impl Tool for FileReadTool {
 }
 
 /// Extract text from a PDF file using pdftotext (poppler-utils).
-async fn read_pdf(file_path: &str) -> Result<ToolResult, ToolError> {
-    // Try pdftotext (most common PDF extraction tool on Linux/macOS).
-    let output = tokio::process::Command::new("pdftotext")
-        .args([file_path, "-"])
-        .output()
-        .await;
+async fn read_pdf(file_path: &str, pages: Option<&str>) -> Result<ToolResult, ToolError> {
+    // Build pdftotext command with optional page range.
+    let mut cmd = tokio::process::Command::new("pdftotext");
+
+    if let Some(page_spec) = pages {
+        // Parse page spec like "1-5", "3", "10-20".
+        let (first, last) = if let Some((start, end)) = page_spec.split_once('-') {
+            (
+                start.trim().to_string(),
+                end.trim().to_string(),
+            )
+        } else {
+            let page = page_spec.trim().to_string();
+            (page.clone(), page)
+        };
+        cmd.arg("-f").arg(&first).arg("-l").arg(&last);
+    }
+
+    cmd.arg(file_path).arg("-");
+    let output = cmd.output().await;
 
     match output {
         Ok(out) if out.status.success() => {

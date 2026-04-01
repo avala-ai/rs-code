@@ -165,6 +165,8 @@ pub struct UiConfig {
     pub syntax_highlight: bool,
     /// Theme name.
     pub theme: String,
+    /// Editing mode: "emacs" or "vi".
+    pub edit_mode: String,
 }
 
 impl Default for UiConfig {
@@ -173,6 +175,7 @@ impl Default for UiConfig {
             markdown: true,
             syntax_highlight: true,
             theme: "dark".to_string(),
+            edit_mode: "emacs".to_string(),
         }
     }
 }
