@@ -446,13 +446,22 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             if let Some(id) = args {
                 match agent_code_lib::services::session::load_session(id) {
                     Ok(data) => {
-                        engine.state_mut().messages = data.messages;
-                        engine.state_mut().turn_count = data.turn_count;
+                        let state = engine.state_mut();
+                        state.messages = data.messages;
+                        state.turn_count = data.turn_count;
+                        state.total_cost_usd = data.total_cost_usd;
+                        state.total_usage.input_tokens = data.total_input_tokens;
+                        state.total_usage.output_tokens = data.total_output_tokens;
+                        state.plan_mode = data.plan_mode;
+                        if !data.model.is_empty() {
+                            state.config.api.model = data.model.clone();
+                        }
                         println!(
-                            "Resumed session {} ({} messages, {} turns)",
+                            "Resumed session {} ({} messages, {} turns, ${:.4})",
                             id,
                             engine.state().messages.len(),
                             data.turn_count,
+                            data.total_cost_usd,
                         );
                     }
                     Err(e) => println!("Failed to resume: {e}"),

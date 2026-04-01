@@ -725,6 +725,22 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                 esc_watcher.abort();
                 sink.ensure_newline();
                 println!();
+
+                // Auto-save session after each turn.
+                {
+                    let state = engine.state();
+                    let _ = agent_code_lib::services::session::save_session_full(
+                        &session_id,
+                        &state.messages,
+                        &state.cwd,
+                        &state.config.api.model,
+                        state.turn_count,
+                        state.total_cost_usd,
+                        state.total_usage.input_tokens,
+                        state.total_usage.output_tokens,
+                        state.plan_mode,
+                    );
+                }
             }
             Err(ReadlineError::Interrupted) => {
                 if engine.state().is_query_active {

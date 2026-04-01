@@ -29,6 +29,18 @@ pub struct SessionData {
     pub messages: Vec<Message>,
     /// Total turns completed.
     pub turn_count: usize,
+    /// Total cost in USD.
+    #[serde(default)]
+    pub total_cost_usd: f64,
+    /// Total input tokens.
+    #[serde(default)]
+    pub total_input_tokens: u64,
+    /// Total output tokens.
+    #[serde(default)]
+    pub total_output_tokens: u64,
+    /// Whether plan mode was active.
+    #[serde(default)]
+    pub plan_mode: bool,
 }
 
 /// Sessions directory path.
@@ -44,19 +56,52 @@ pub fn save_session(
     model: &str,
     turn_count: usize,
 ) -> Result<PathBuf, String> {
+    save_session_full(
+        session_id, messages, cwd, model, turn_count, 0.0, 0, 0, false,
+    )
+}
+
+/// Save the full session state to disk (including cost and token tracking).
+#[allow(clippy::too_many_arguments)]
+pub fn save_session_full(
+    session_id: &str,
+    messages: &[Message],
+    cwd: &str,
+    model: &str,
+    turn_count: usize,
+    total_cost_usd: f64,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
+    plan_mode: bool,
+) -> Result<PathBuf, String> {
     let dir = sessions_dir().ok_or("Could not determine sessions directory")?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create sessions dir: {e}"))?;
 
     let path = dir.join(format!("{session_id}.json"));
 
+    // Preserve original created_at if file exists.
+    let created_at = if path.exists() {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<SessionData>(&c).ok())
+            .map(|d| d.created_at)
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339())
+    } else {
+        chrono::Utc::now().to_rfc3339()
+    };
+
     let data = SessionData {
         id: session_id.to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at,
         updated_at: chrono::Utc::now().to_rfc3339(),
         cwd: cwd.to_string(),
         model: model.to_string(),
         messages: messages.to_vec(),
         turn_count,
+        total_cost_usd,
+        total_input_tokens,
+        total_output_tokens,
+        plan_mode,
     };
 
     let json = serde_json::to_string_pretty(&data)
@@ -182,6 +227,10 @@ mod tests {
             model: "test-model".to_string(),
             messages: messages.clone(),
             turn_count: 5,
+            total_cost_usd: 0.0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            plan_mode: false,
         };
         let json = serde_json::to_string_pretty(&data).unwrap();
         std::fs::create_dir_all(dir.path()).unwrap();
@@ -206,6 +255,10 @@ mod tests {
             model: "claude-sonnet-4".to_string(),
             messages: vec![user_message("test")],
             turn_count: 3,
+            total_cost_usd: 0.05,
+            total_input_tokens: 1000,
+            total_output_tokens: 500,
+            plan_mode: false,
         };
 
         let json = serde_json::to_string(&data).unwrap();
