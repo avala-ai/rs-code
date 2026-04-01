@@ -156,7 +156,7 @@ mod tests {
         // Create enough messages to exceed a tiny budget.
         let mut messages = Vec::new();
         for i in 0..10 {
-            messages.push(user_message(&format!(
+            messages.push(user_message(format!(
                 "message {i} with some content padding"
             )));
             messages.push(Message::Assistant(AssistantMessage {
@@ -186,7 +186,7 @@ mod tests {
         use crate::llm::message::*;
         let mut messages = Vec::new();
         for i in 0..20 {
-            messages.push(user_message(&format!("msg {i} {}", "x".repeat(200))));
+            messages.push(user_message(format!("msg {i} {}", "x".repeat(200))));
             messages.push(Message::Assistant(AssistantMessage {
                 uuid: uuid::Uuid::new_v4(),
                 timestamp: String::new(),
