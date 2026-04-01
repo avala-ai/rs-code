@@ -22,11 +22,13 @@ pub fn ask_permission(tool_name: &str, description: &str) -> bool {
             label: "Allow".into(),
             description: "".into(),
             value: "y".into(),
+            preview: None,
         },
         super::selector::SelectOption {
             label: "Deny".into(),
             description: "".into(),
             value: "n".into(),
+            preview: None,
         },
     ]);
 

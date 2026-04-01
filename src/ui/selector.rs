@@ -2,7 +2,7 @@
 //!
 //! Renders a list of options with a highlighted cursor that moves
 //! with up/down arrow keys. Enter confirms the selection.
-//! Uses crossterm raw mode for immediate key capture.
+//! Supports optional live preview that updates as the cursor moves.
 
 use std::io::Write;
 
@@ -17,47 +17,42 @@ pub struct SelectOption {
     pub label: String,
     pub description: String,
     pub value: String,
+    /// Optional preview content shown below the options when this item is focused.
+    pub preview: Option<String>,
 }
 
 /// Show an interactive selector and return the chosen value.
-/// Returns the `value` field of the selected option.
 pub fn select(options: &[SelectOption]) -> String {
     if options.is_empty() {
         return String::new();
     }
 
+    let has_preview = options.iter().any(|o| o.preview.is_some());
     let mut selected = 0usize;
 
-    // Enter raw mode for immediate key capture.
     terminal::enable_raw_mode().expect("failed to enable raw mode");
 
-    // Initial render.
-    render_options(options, selected);
+    render_all(options, selected, has_preview);
 
     loop {
         if let Ok(Event::Key(KeyEvent { code, .. })) = event::read() {
             match code {
                 KeyCode::Up | KeyCode::Char('k') => {
-                    if selected > 0 {
-                        selected -= 1;
+                    selected = if selected > 0 {
+                        selected - 1
                     } else {
-                        selected = options.len() - 1; // Wrap around.
-                    }
+                        options.len() - 1
+                    };
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if selected < options.len() - 1 {
-                        selected += 1;
+                    selected = if selected < options.len() - 1 {
+                        selected + 1
                     } else {
-                        selected = 0; // Wrap around.
-                    }
+                        0
+                    };
                 }
-                KeyCode::Enter => {
-                    break;
-                }
-                KeyCode::Char('q') | KeyCode::Esc => {
-                    break;
-                }
-                // Also accept letter shortcuts (a, b, c...).
+                KeyCode::Enter => break,
+                KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Char(c) => {
                     let idx = c.to_ascii_lowercase() as usize - 'a' as usize;
                     if idx < options.len() {
@@ -68,31 +63,31 @@ pub fn select(options: &[SelectOption]) -> String {
                 _ => {}
             }
 
-            // Clear and re-render.
-            clear_options(options.len());
-            render_options(options, selected);
+            clear_all(options.len(), has_preview);
+            render_all(options, selected, has_preview);
         }
     }
 
-    // Restore terminal.
     terminal::disable_raw_mode().expect("failed to disable raw mode");
 
-    // Clear the menu and show the selection.
-    clear_options(options.len());
+    clear_all(options.len(), has_preview);
     let chosen = &options[selected];
     println!("    {} {}\r", "→".dark_cyan(), chosen.label.clone().bold());
 
     options[selected].value.clone()
 }
 
-fn render_options(options: &[SelectOption], selected: usize) {
+/// Preview lines count (fixed height so the UI doesn't jump).
+const PREVIEW_LINES: usize = 6;
+
+fn render_all(options: &[SelectOption], selected: usize, has_preview: bool) {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 
+    // Render options.
     for (i, opt) in options.iter().enumerate() {
         let letter = (b'A' + i as u8) as char;
         if i == selected {
-            // Highlighted.
             write!(
                 out,
                 "  {} {} {}\r\n",
@@ -112,14 +107,30 @@ fn render_options(options: &[SelectOption], selected: usize) {
             .ok();
         }
     }
+
+    // Render preview block if any option has preview content.
+    if has_preview {
+        write!(out, "\r\n").ok(); // Blank separator line.
+        let preview_text = options[selected].preview.as_deref().unwrap_or("");
+
+        let lines: Vec<&str> = preview_text.lines().collect();
+        for i in 0..PREVIEW_LINES {
+            if i < lines.len() {
+                write!(out, "    {}\r\n", lines[i]).ok();
+            } else {
+                write!(out, "    \r\n").ok();
+            }
+        }
+    }
+
     out.flush().ok();
 }
 
-fn clear_options(count: usize) {
+fn clear_all(option_count: usize, has_preview: bool) {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    // Move up and clear each line.
-    for _ in 0..count {
+    let total = option_count + if has_preview { PREVIEW_LINES + 1 } else { 0 };
+    for _ in 0..total {
         write!(out, "\x1b[A\x1b[2K").ok();
     }
     out.flush().ok();

@@ -34,31 +34,73 @@ pub fn run_setup() -> Option<SetupResult> {
             label: "Midnight".into(),
             description: "(dark, recommended)".into(),
             value: "midnight".into(),
+            preview: Some(
+                "\x1b[48;2;24;24;36m\x1b[38;2;86;182;194m  fn \x1b[38;2;198;160;246mmain\x1b[38;2;204;204;204m() {\x1b[0m\n\
+                 \x1b[48;2;24;24;36m\x1b[38;2;204;204;204m      \x1b[38;2;86;182;194mlet\x1b[38;2;204;204;204m msg = \x1b[38;2;152;195;121m\"hello world\"\x1b[38;2;204;204;204m;\x1b[0m\n\
+                 \x1b[48;2;24;24;36m\x1b[38;2;204;204;204m      println!(\x1b[38;2;152;195;121m\"{}\"\x1b[38;2;204;204;204m, msg);\x1b[0m\n\
+                 \x1b[48;2;24;24;36m\x1b[38;2;204;204;204m  }\x1b[0m\n\
+                 \x1b[48;2;24;24;36m\x1b[38;2;86;182;194m  // \x1b[38;2;106;115;125mfast and minimal\x1b[0m".to_string(),
+            ),
         },
         SelectOption {
             label: "Daybreak".into(),
             description: "(light)".into(),
             value: "daybreak".into(),
+            preview: Some(
+                "\x1b[48;2;253;246;227m\x1b[38;2;38;139;210m  fn \x1b[38;2;108;113;196mmain\x1b[38;2;55;65;81m() {\x1b[0m\n\
+                 \x1b[48;2;253;246;227m\x1b[38;2;55;65;81m      \x1b[38;2;38;139;210mlet\x1b[38;2;55;65;81m msg = \x1b[38;2;133;153;0m\"hello world\"\x1b[38;2;55;65;81m;\x1b[0m\n\
+                 \x1b[48;2;253;246;227m\x1b[38;2;55;65;81m      println!(\x1b[38;2;133;153;0m\"{}\"\x1b[38;2;55;65;81m, msg);\x1b[0m\n\
+                 \x1b[48;2;253;246;227m\x1b[38;2;55;65;81m  }\x1b[0m\n\
+                 \x1b[48;2;253;246;227m\x1b[38;2;38;139;210m  // \x1b[38;2;147;161;161mclean and bright\x1b[0m".to_string(),
+            ),
         },
         SelectOption {
             label: "Midnight Muted".into(),
             description: "(dark, softer contrast)".into(),
             value: "midnight-muted".into(),
+            preview: Some(
+                "\x1b[48;2;40;44;52m\x1b[38;2;97;175;239m  fn \x1b[38;2;198;120;221mmain\x1b[38;2;171;178;191m() {\x1b[0m\n\
+                 \x1b[48;2;40;44;52m\x1b[38;2;171;178;191m      \x1b[38;2;97;175;239mlet\x1b[38;2;171;178;191m msg = \x1b[38;2;152;195;121m\"hello world\"\x1b[38;2;171;178;191m;\x1b[0m\n\
+                 \x1b[48;2;40;44;52m\x1b[38;2;171;178;191m      println!(\x1b[38;2;152;195;121m\"{}\"\x1b[38;2;171;178;191m, msg);\x1b[0m\n\
+                 \x1b[48;2;40;44;52m\x1b[38;2;171;178;191m  }\x1b[0m\n\
+                 \x1b[48;2;40;44;52m\x1b[38;2;97;175;239m  // \x1b[38;2;92;99;112measy on the eyes\x1b[0m".to_string(),
+            ),
         },
         SelectOption {
             label: "Daybreak Muted".into(),
             description: "(light, softer contrast)".into(),
             value: "daybreak-muted".into(),
+            preview: Some(
+                "\x1b[48;2;250;244;235m\x1b[38;2;66;133;244m  fn \x1b[38;2;140;100;200mmain\x1b[38;2;80;90;100m() {\x1b[0m\n\
+                 \x1b[48;2;250;244;235m\x1b[38;2;80;90;100m      \x1b[38;2;66;133;244mlet\x1b[38;2;80;90;100m msg = \x1b[38;2;80;160;80m\"hello world\"\x1b[38;2;80;90;100m;\x1b[0m\n\
+                 \x1b[48;2;250;244;235m\x1b[38;2;80;90;100m      println!(\x1b[38;2;80;160;80m\"{}\"\x1b[38;2;80;90;100m, msg);\x1b[0m\n\
+                 \x1b[48;2;250;244;235m\x1b[38;2;80;90;100m  }\x1b[0m\n\
+                 \x1b[48;2;250;244;235m\x1b[38;2;66;133;244m  // \x1b[38;2;160;170;180mgentle warmth\x1b[0m".to_string(),
+            ),
         },
         SelectOption {
             label: "Terminal Native".into(),
             description: "(uses your terminal colors)".into(),
             value: "terminal".into(),
+            preview: Some(
+                "\x1b[36m  fn \x1b[35mmain\x1b[0m() {\n\
+                 \x1b[0m      \x1b[36mlet\x1b[0m msg = \x1b[32m\"hello world\"\x1b[0m;\n\
+                 \x1b[0m      println!(\x1b[32m\"{}\"\x1b[0m, msg);\n\
+                 \x1b[0m  }\n\
+                 \x1b[36m  // \x1b[90myour colors, your way\x1b[0m".to_string(),
+            ),
         },
         SelectOption {
             label: "Auto".into(),
             description: "(follows system dark/light mode)".into(),
             value: "auto".into(),
+            preview: Some(
+                "\x1b[90m  Detects your system preference\n\
+                 \x1b[90m  and switches between Midnight\n\
+                 \x1b[90m  and Daybreak automatically.\n\
+                 \x1b[0m\n\
+                 ".to_string(),
+            ),
         },
     ]);
     println!();
@@ -70,31 +112,37 @@ pub fn run_setup() -> Option<SetupResult> {
             label: "OpenAI (GPT)".into(),
             description: "GPT-5.4, GPT-4.1".into(),
             value: "openai".into(),
+            preview: None,
         },
         SelectOption {
             label: "Anthropic (Claude)".into(),
             description: "Opus, Sonnet, Haiku".into(),
             value: "anthropic".into(),
+            preview: None,
         },
         SelectOption {
             label: "xAI (Grok)".into(),
             description: "Grok-3, Grok-2".into(),
             value: "xai".into(),
+            preview: None,
         },
         SelectOption {
             label: "Google (Gemini)".into(),
             description: "Gemini 2.5 Flash/Pro".into(),
             value: "google".into(),
+            preview: None,
         },
         SelectOption {
             label: "DeepSeek".into(),
             description: "DeepSeek-V3".into(),
             value: "deepseek".into(),
+            preview: None,
         },
         SelectOption {
             label: "Other".into(),
             description: "(OpenAI-compatible endpoint)".into(),
             value: "custom".into(),
+            preview: None,
         },
     ]);
 
@@ -186,16 +234,19 @@ pub fn run_setup() -> Option<SetupResult> {
             label: "Ask before changes".into(),
             description: "(recommended) confirms before edits and commands".into(),
             value: "ask".into(),
+            preview: None,
         },
         SelectOption {
             label: "Auto-approve edits".into(),
             description: "file changes automatic, commands still ask".into(),
             value: "accept_edits".into(),
+            preview: None,
         },
         SelectOption {
             label: "Trust fully".into(),
             description: "everything runs without asking".into(),
             value: "allow".into(),
+            preview: None,
         },
     ]);
     println!();
