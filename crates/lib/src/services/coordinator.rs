@@ -130,4 +130,125 @@ impl AgentRegistry {
         agents.sort_by_key(|a| &a.name);
         agents
     }
+
+    /// Load agent definitions from disk (`.agent/agents/` and `~/.config/agent-code/agents/`).
+    /// Each `.md` file is parsed for YAML frontmatter with agent configuration.
+    pub fn load_from_disk(&mut self, cwd: Option<&std::path::Path>) {
+        // Project-level agents.
+        if let Some(cwd) = cwd {
+            let project_dir = cwd.join(".agent").join("agents");
+            self.load_agents_from_dir(&project_dir);
+        }
+
+        // User-level agents.
+        if let Some(config_dir) = dirs::config_dir() {
+            let user_dir = config_dir.join("agent-code").join("agents");
+            self.load_agents_from_dir(&user_dir);
+        }
+    }
+
+    fn load_agents_from_dir(&mut self, dir: &std::path::Path) {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "md")
+                && let Some(def) = parse_agent_file(&path)
+            {
+                self.agents.insert(def.name.clone(), def);
+            }
+        }
+    }
+}
+
+/// Parse an agent definition from a markdown file with YAML frontmatter.
+///
+/// Expected format:
+/// ```markdown
+/// ---
+/// name: my-agent
+/// description: A specialized agent
+/// model: gpt-4.1-mini
+/// read_only: false
+/// max_turns: 20
+/// include_tools: [FileRead, Grep, Glob]
+/// exclude_tools: [Bash]
+/// ---
+///
+/// System prompt additions go here...
+/// ```
+fn parse_agent_file(path: &std::path::Path) -> Option<AgentDefinition> {
+    let content = std::fs::read_to_string(path).ok()?;
+
+    // Parse YAML frontmatter.
+    if !content.starts_with("---") {
+        return None;
+    }
+    let end = content[3..].find("---")?;
+    let frontmatter = &content[3..3 + end];
+    let body = content[3 + end + 3..].trim();
+
+    let mut name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("custom")
+        .to_string();
+    let mut description = String::new();
+    let mut model = None;
+    let mut read_only = false;
+    let mut max_turns = None;
+    let mut include_tools = Vec::new();
+    let mut exclude_tools = Vec::new();
+
+    for line in frontmatter.lines() {
+        let line = line.trim();
+        if let Some((key, value)) = line.split_once(':') {
+            let key = key.trim();
+            let value = value.trim();
+            match key {
+                "name" => name = value.to_string(),
+                "description" => description = value.to_string(),
+                "model" => model = Some(value.to_string()),
+                "read_only" => read_only = value == "true",
+                "max_turns" => max_turns = value.parse().ok(),
+                "include_tools" => {
+                    include_tools = value
+                        .trim_matches(|c| c == '[' || c == ']')
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+                "exclude_tools" => {
+                    exclude_tools = value
+                        .trim_matches(|c| c == '[' || c == ']')
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let system_prompt = if body.is_empty() {
+        None
+    } else {
+        Some(body.to_string())
+    };
+
+    Some(AgentDefinition {
+        name,
+        description,
+        system_prompt,
+        model,
+        include_tools,
+        exclude_tools,
+        read_only,
+        max_turns,
+    })
 }
