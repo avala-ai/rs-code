@@ -19,6 +19,30 @@ pub struct Config {
     /// Lifecycle hooks.
     #[serde(default)]
     pub hooks: Vec<crate::hooks::HookDefinition>,
+    /// Security and enterprise settings.
+    #[serde(default)]
+    pub security: SecurityConfig,
+}
+
+/// Security and enterprise configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SecurityConfig {
+    /// Additional directories the agent can access (beyond cwd).
+    #[serde(default)]
+    pub additional_directories: Vec<String>,
+    /// MCP server allowlist. If non-empty, only listed servers can connect.
+    #[serde(default)]
+    pub mcp_server_allowlist: Vec<String>,
+    /// MCP server denylist. Listed servers are blocked from connecting.
+    #[serde(default)]
+    pub mcp_server_denylist: Vec<String>,
+    /// Disable the --dangerously-skip-permissions flag.
+    #[serde(default)]
+    pub disable_bypass_permissions: bool,
+    /// Restrict which environment variables the agent can read.
+    #[serde(default)]
+    pub env_allowlist: Vec<String>,
 }
 
 /// Entry for a configured MCP server.
