@@ -55,8 +55,8 @@ impl ActivityIndicator {
                     format!("{label}{dots}")
                 };
 
-                eprint!("\r{}", status.dark_grey());
-                let _ = std::io::stderr().flush();
+                print!("\r{}", status.dark_grey());
+                let _ = std::io::stdout().flush();
 
                 tokio::time::sleep(Duration::from_millis(400)).await;
                 frame += 1;
@@ -66,8 +66,8 @@ impl ActivityIndicator {
             }
 
             // Clear the line.
-            eprint!("\r{}\r", " ".repeat(40));
-            let _ = std::io::stderr().flush();
+            print!("\r{}\r", " ".repeat(60));
+            let _ = std::io::stdout().flush();
         });
 
         Self {

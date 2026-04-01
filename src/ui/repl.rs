@@ -33,8 +33,19 @@ impl TerminalSink {
         Self {
             mid_line: Arc::new(Mutex::new(false)),
             response_buffer: Arc::new(Mutex::new(String::new())),
-            indicator: Arc::new(Mutex::new(Some(ActivityIndicator::thinking()))),
+            // Don't start indicator here — it would overwrite the input prompt.
+            // It gets started when the API call begins (via start_indicator).
+            indicator: Arc::new(Mutex::new(None)),
             verbose,
+        }
+    }
+
+    /// Start the activity indicator (call when API request begins).
+    fn start_indicator(&self) {
+        if let Ok(mut guard) = self.indicator.lock()
+            && guard.is_none()
+        {
+            *guard = Some(ActivityIndicator::thinking());
         }
     }
 
@@ -242,6 +253,7 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                         crate::commands::CommandResult::Handled => continue,
                         crate::commands::CommandResult::Exit => break,
                         crate::commands::CommandResult::Passthrough(text) => {
+                            sink.start_indicator();
                             if let Err(e) = engine.run_turn_with_sink(&text, &sink).await {
                                 eprintln!("{} {e}", " ERROR ".on_red().white().bold());
                             }
@@ -249,6 +261,7 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                             println!();
                         }
                         crate::commands::CommandResult::Prompt(prompt) => {
+                            sink.start_indicator();
                             if let Err(e) = engine.run_turn_with_sink(&prompt, &sink).await {
                                 eprintln!("{} {e}", " ERROR ".on_red().white().bold());
                             }
@@ -259,7 +272,8 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                     continue;
                 }
 
-                // Run the agent turn.
+                // Run the agent turn. Start the indicator now (after input is captured).
+                sink.start_indicator();
                 if let Err(e) = engine.run_turn_with_sink(input, &sink).await {
                     eprintln!("{} {e}", " ERROR ".on_red().white().bold());
                 }
