@@ -16,9 +16,22 @@ pub use schema::*;
 use crate::error::ConfigError;
 use std::path::{Path, PathBuf};
 
+/// Re-entrancy guard to prevent Config::load → log → Config::load cycles.
+static LOADING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 impl Config {
     /// Load configuration from all sources, merging by priority.
     pub fn load() -> Result<Config, ConfigError> {
+        // Re-entrancy guard.
+        if LOADING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(Config::default());
+        }
+        let result = Self::load_inner();
+        LOADING.store(false, std::sync::atomic::Ordering::SeqCst);
+        result
+    }
+
+    fn load_inner() -> Result<Config, ConfigError> {
         let mut config = Config::default();
 
         // Layer 1: User-level config.
@@ -81,6 +94,52 @@ fn user_config_path() -> Option<PathBuf> {
 fn find_project_config() -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
     find_config_in_ancestors(&cwd)
+}
+
+/// Watch config files for changes and reload when modified.
+/// Returns a handle that can be dropped to stop watching.
+pub fn watch_config(
+    on_reload: impl Fn(Config) + Send + 'static,
+) -> Option<std::thread::JoinHandle<()>> {
+    let user_path = user_config_path()?;
+    let project_path = find_project_config();
+
+    // Get initial mtimes.
+    let user_mtime = std::fs::metadata(&user_path)
+        .ok()
+        .and_then(|m| m.modified().ok());
+    let project_mtime = project_path
+        .as_ref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok());
+
+    Some(std::thread::spawn(move || {
+        let mut last_user = user_mtime;
+        let mut last_project = project_mtime;
+
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+
+            let cur_user = std::fs::metadata(&user_path)
+                .ok()
+                .and_then(|m| m.modified().ok());
+            let cur_project = project_path
+                .as_ref()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .and_then(|m| m.modified().ok());
+
+            let changed = cur_user != last_user || cur_project != last_project;
+
+            if changed {
+                if let Ok(config) = Config::load() {
+                    tracing::info!("Config reloaded (file change detected)");
+                    on_reload(config);
+                }
+                last_user = cur_user;
+                last_project = cur_project;
+            }
+        }
+    }))
 }
 
 fn find_config_in_ancestors(start: &Path) -> Option<PathBuf> {

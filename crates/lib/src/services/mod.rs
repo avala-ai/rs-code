@@ -13,6 +13,7 @@ pub mod coordinator;
 pub mod diagnostics;
 pub mod file_cache;
 pub mod git;
+pub mod git_ops;
 pub mod history;
 pub mod lsp;
 pub mod mcp;

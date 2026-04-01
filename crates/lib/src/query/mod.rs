@@ -56,6 +56,8 @@ pub struct QueryEngine {
     extraction_state: Arc<tokio::sync::Mutex<crate::memory::extraction::ExtractionState>>,
     session_allows: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
     permission_prompter: Option<Arc<dyn crate::tools::PermissionPrompter>>,
+    /// Cached system prompt (rebuilt only when inputs change).
+    cached_system_prompt: Option<(u64, String)>, // (hash, prompt)
 }
 
 /// Callback for streaming events to the UI.
@@ -108,6 +110,7 @@ impl QueryEngine {
             )),
             session_allows: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
             permission_prompter: None,
+            cached_system_prompt: None,
         }
     }
 
@@ -287,7 +290,25 @@ impl QueryEngine {
             }
 
             // Step 3: Build and send the API request.
-            let system_prompt = build_system_prompt(&self.tools, &self.state);
+            // Memoize: only rebuild system prompt when inputs change.
+            let prompt_hash = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                self.state.config.api.model.hash(&mut h);
+                self.state.cwd.hash(&mut h);
+                self.state.config.mcp_servers.len().hash(&mut h);
+                self.tools.all().len().hash(&mut h);
+                h.finish()
+            };
+            let system_prompt = if let Some((cached_hash, ref cached)) = self.cached_system_prompt
+                && cached_hash == prompt_hash
+            {
+                cached.clone()
+            } else {
+                let prompt = build_system_prompt(&self.tools, &self.state);
+                self.cached_system_prompt = Some((prompt_hash, prompt.clone()));
+                prompt
+            };
             // Use core schemas (deferred tools loaded on demand via ToolSearch).
             let tool_schemas = self.tools.core_schemas();
 
