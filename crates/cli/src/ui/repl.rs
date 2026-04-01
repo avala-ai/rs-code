@@ -551,6 +551,31 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
 
                 rl.add_history_entry(input)?;
 
+                // Re-echo user input with styled background for visual separation.
+                // Uses ANSI background color to distinguish user turns from agent output.
+                if !input.starts_with('/') && input != "?" && !input.starts_with('!') {
+                    let t = super::theme::current();
+                    let bg = if t.is_dark {
+                        "\x1b[48;2;55;55;55m" // dark: subtle grey bg
+                    } else {
+                        "\x1b[48;2;235;235;240m" // light: subtle grey bg
+                    };
+                    // Print each line of the input with background color.
+                    for line in input.lines() {
+                        let pad = crossterm::terminal::size()
+                            .map(|(w, _)| w as usize)
+                            .unwrap_or(80)
+                            .saturating_sub(line.len() + 4);
+                        println!(
+                            "{bg}  {} {}{}\x1b[0m",
+                            "❯".with(t.accent),
+                            line,
+                            " ".repeat(pad),
+                        );
+                    }
+                    println!();
+                }
+
                 // ! prefix: run shell command directly (bash mode).
                 if input.starts_with('!') {
                     let cmd = input.strip_prefix('!').unwrap_or("").trim();
