@@ -313,8 +313,17 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     agent_code_lib::memory::session_notes::init_session_notes(&session_id);
     agent_code_lib::memory::session_notes::cleanup_old_notes();
 
-    // Load history.
-    let history_path = dirs::data_dir().map(|d| d.join("agent-code").join("history.txt"));
+    // Load project-scoped history (hashed from cwd).
+    let history_path = dirs::data_dir().map(|d| {
+        let cwd = &engine.state().cwd;
+        // Hash the cwd to create a project-specific history file.
+        let hash: u64 = cwd
+            .bytes()
+            .fold(5381u64, |h, b| h.wrapping_mul(33).wrapping_add(b as u64));
+        d.join("agent-code")
+            .join("history")
+            .join(format!("{hash:x}.txt"))
+    });
     if let Some(ref path) = history_path {
         let _ = std::fs::create_dir_all(path.parent().unwrap());
         let _ = rl.load_history(path);
