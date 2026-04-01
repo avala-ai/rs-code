@@ -1,8 +1,8 @@
 <p align="center">
-  <h1 align="center">agent-code</h1>
+  <h1 align="center">Agent Code</h1>
   <p align="center">
-    A fast, open-source AI coding agent for the terminal.<br>
-    Built in pure Rust by <a href="https://github.com/avala-ai">Avala AI</a>.
+    AI coding agent for the terminal. Built in Rust.<br>
+    <a href="https://github.com/avala-ai">Avala AI</a>
   </p>
 </p>
 
@@ -14,363 +14,108 @@
 
 ---
 
-`agent-code` is an AI-powered coding agent that lives in your terminal. It reads your codebase, executes commands, edits files, and handles multi-step engineering tasks autonomously. Think of it as a senior engineer that works alongside you in the shell.
-
-```
-$ cargo install agent-code
-$ export AGENT_CODE_API_KEY="your-api-key"
-$ agent
-```
-
-## Why agent-code
-
-- **Fast.** Single static binary, ~8MB. Starts instantly. Streams responses as they arrive.
-- **Private.** Runs locally. No telemetry. Your code never leaves your machine except for the LLM API call.
-- **Extensible.** Connect external tools via MCP servers, write custom skills as markdown files, build plugins as TOML packages.
-- **Safe.** Every tool call goes through a permission system. Plan mode locks the agent to read-only. Configurable rules per tool and pattern.
-- **Provider-agnostic.** Works with 11 providers out of the box, including AWS Bedrock and Google Vertex AI. Swap models with `--model` or `/model`.
-- **Themed.** 6 color themes (dark, light, muted, ANSI-only, auto-detect). Semantic colors across all UI elements.
-
-## Supported Models
-
-agent-code works with any LLM provider. Set one environment variable and go:
-
-| Provider | Env Variable | Models |
-|----------|-------------|--------|
-| **Anthropic** | `ANTHROPIC_API_KEY` | Claude Opus, Sonnet, Haiku |
-| **OpenAI** | `OPENAI_API_KEY` | GPT-5.4, GPT-5.4-mini, GPT-5.4-nano, GPT-4.1, GPT-4o, o1, o3 |
-| **xAI** | `XAI_API_KEY` | Grok-3, Grok-3-mini, Grok-2 |
-| **Google** | `GOOGLE_API_KEY` | Gemini 2.5 Flash, Gemini 2.5 Pro |
-| **DeepSeek** | `DEEPSEEK_API_KEY` | DeepSeek-V3, DeepSeek-Chat |
-| **Groq** | `GROQ_API_KEY` | Llama 3.3 70B, Mixtral |
-| **Mistral** | `MISTRAL_API_KEY` | Mistral Large, Codestral |
-| **Together** | `TOGETHER_API_KEY` | Llama 3, Qwen, and 100+ open models |
-| **Ollama** | (local) | Any model via `--api-base-url http://localhost:11434/v1` |
-
-Plus any OpenAI-compatible endpoint via `--api-base-url`.
-
-**Tested and verified** (12/12 on our E2E test suite): GPT-4.1-mini (OpenAI), Qwen3 8B (Ollama). Models need function calling / tool use support for full functionality.
-
 ## Install
 
-**One-line install** (Linux/macOS):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/avala-ai/agent-code/main/install.sh | bash
 ```
 
-**From crates.io:**
-```bash
-cargo install agent-code
-```
+Or: `cargo install agent-code` / `brew install avala-ai/tap/agent-code`
 
-**Homebrew:**
-```bash
-brew install avala-ai/tap/agent-code
-```
-
-**From source:**
-```bash
-git clone https://github.com/avala-ai/agent-code.git
-cd agent-code
-cargo build --release
-# Binary is at target/release/agent
-```
-
-**From GitHub Releases:**
-
-Download prebuilt binaries for Linux (x86_64, aarch64) and macOS (x86_64, aarch64) from the [Releases page](https://github.com/avala-ai/agent-code/releases).
-
-## Quick Start
+## Quickstart
 
 ```bash
-# Set your API key
-export AGENT_CODE_API_KEY="your-api-key"
-
-# Interactive mode
-agent
-
-# One-shot: ask a question and exit
-agent --prompt "find all TODO comments in this repo"
-
-# Use a specific model
-agent --model claude-opus-4-20250514
-
-# Print the system prompt (useful for debugging)
-agent --dump-system-prompt
+agent                          # interactive mode (runs setup wizard on first launch)
+agent --prompt "fix the tests" # one-shot mode
+agent --model gpt-4.1-mini     # use a specific model
 ```
 
-Once inside the REPL, type naturally. The agent reads files, runs commands, and edits code to accomplish what you ask. Type `/help` to see all available commands.
+The agent reads your codebase, runs commands, edits files, and handles multi-step tasks. Type `?` for keyboard shortcuts.
 
-The REPL supports tab completion for `/` commands, inline hints, vi/emacs editing modes (auto-detected from `$EDITOR`, or set with `/vim` and `/emacs`), reverse history search (Ctrl+R), and multi-line input with `\` continuation.
+## 12 Providers
 
-## What It Can Do
+Works with any LLM. Set one env var and go:
 
-The agent has 31 built-in tools and 42 slash commands. Here are the highlights:
+| Provider | Env Variable | Default Model |
+|----------|-------------|---------------|
+| OpenAI | `OPENAI_API_KEY` | gpt-5.4 |
+| Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4 |
+| xAI | `XAI_API_KEY` | grok-3 |
+| Google | `GOOGLE_API_KEY` | gemini-2.5-flash |
+| DeepSeek | `DEEPSEEK_API_KEY` | deepseek-chat |
+| Groq | `GROQ_API_KEY` | llama-3.3-70b |
+| Mistral | `MISTRAL_API_KEY` | mistral-large |
+| Together | `TOGETHER_API_KEY` | meta-llama-3.1-70b |
+| Zhipu (z.ai) | `ZHIPU_API_KEY` | glm-4.7 |
+| Ollama | (none) | qwen3:latest |
+| AWS Bedrock | `AGENT_CODE_USE_BEDROCK` | claude-sonnet-4 |
+| Google Vertex | `AGENT_CODE_USE_VERTEX` | claude-sonnet-4 |
 
-**Read and understand code:**
-```
-> explain how the authentication middleware works
-> find where the database connection pool is configured
-> what changed in the last 3 commits?
-```
+Plus any OpenAI-compatible endpoint: `agent --api-base-url http://localhost:8080/v1`
 
-**Write and edit code:**
-```
-> add input validation to the signup endpoint
-> refactor this function to use async/await
-> fix the failing test in tests/auth_test.rs
-```
+## Input Modes
 
-**Run commands and manage git:**
-```
-> run the test suite and fix any failures
-> /commit  (reviews diff and creates a commit)
-> /review  (analyzes diff for bugs and issues)
-```
+| Prefix | Action |
+|--------|--------|
+| (none) | Chat with the agent |
+| `!` | Run shell command directly |
+| `/` | Slash commands (tab-complete) |
+| `@` | Attach file to prompt |
+| `&` | Run prompt in background |
+| `?` | Toggle shortcuts panel |
+| `\` + Enter | Multi-line input |
 
-**Multi-step tasks:**
-```
-> add a new API endpoint for user preferences with tests, migration, and docs
-```
+## 32 Built-in Tools
 
-The agent handles this by reading existing patterns, creating the migration, writing the endpoint, adding tests, and updating documentation, all in one turn.
+File ops, search, shell, git, web, LSP, MCP, notebooks, tasks, and more. Tools execute during LLM streaming for faster turns. [Full list](https://github.com/avala-ai/agent-code/wiki/Tools)
 
-## Architecture
+## 8 Bundled Skills
 
-```
-                              ┌─────────────┐
-                              │   CLI / REPL │
-                              └──────┬───────┘
-                                     │
-                    ┌────────────────▼────────────────┐
-                    │          Query Engine            │
-                    │  stream → tools → loop → compact │
-                    └──┬──────────┬──────────┬────────┘
-                       │          │          │
-              ┌────────▼──┐ ┌────▼─────┐ ┌──▼───────┐
-              │   Tools   │ │ Perms    │ │  Hooks   │
-              │  23 built │ │ allow    │ │ pre/post │
-              │  + MCP    │ │ deny/ask │ │ shell    │
-              └────��──────┘ └──────────┘ └──────────┘
-                       │          │          │
-   ┌───────────────────▼──────────▼──────────▼──────┐
-   │                    Services                     │
-   │  LLM  Compact  MCP  LSP  Git  Session  Budget  │
-   │  Cache  Bridge  Coordinator  Telemetry  Plugins │
-   └─────────────────────────────────────────────────┘
-```
+`/commit` `/review` `/test` `/explain` `/debug` `/pr` `/refactor` `/init`
 
-The core loop: receive user input, call the LLM with conversation history and tool definitions, stream the response, execute any tool calls the model makes, feed results back, repeat until done. Compaction keeps the context window in check during long sessions.
+Add custom skills as markdown files in `.agent/skills/` or `~/.config/agent-code/skills/`.
 
 ## Configuration
-
-Configuration loads from three layers (highest priority first):
-
-1. **CLI flags and environment variables** (`AGENT_CODE_API_KEY`, `--model`, etc.)
-2. **Project config** (`.agent/settings.toml` in your repo)
-3. **User config** (`~/.config/agent-code/config.toml`)
 
 ```toml
 # ~/.config/agent-code/config.toml
 
 [api]
-base_url = "https://api.anthropic.com/v1"
-model = "claude-sonnet-4-20250514"
+model = "gpt-4.1-mini"
 
 [permissions]
-default_mode = "ask"   # "ask", "allow", or "deny"
+default_mode = "ask"   # ask | allow | deny | accept_edits | plan
 
-[[permissions.rules]]
-tool = "Bash"
-pattern = "git *"
-action = "allow"       # auto-approve git commands
-
-[[permissions.rules]]
-tool = "FileWrite"
-pattern = "/tmp/*"
-action = "allow"
-
-# Connect an MCP server for additional tools
-[mcp_servers.filesystem]
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/docs"]
-```
-
-## Tools
-
-| Tool | What it does |
-|------|-------------|
-| **Agent** | Spawn subagents for parallel work (with optional git worktree isolation) |
-| **Bash** | Run shell commands with timeout and cancellation |
-| **FileRead** | Read files with line numbers (PDF page ranges, images, notebooks, binary detection) |
-| **FileWrite** | Create or overwrite files, auto-creates parent directories |
-| **FileEdit** | Targeted search-and-replace with uniqueness validation and size limits |
-| **Grep** | Regex search powered by ripgrep (-A/-B/-C context, output modes, multiline, type filter, pagination) |
-| **Glob** | Find files by pattern, sorted by modification time |
-| **WebFetch** | Fetch URLs with HTML-to-text conversion |
-| **WebSearch** | Web search with result extraction |
-| **LSP** | Query language servers for diagnostics (falls back to linters) |
-| **NotebookEdit** | Edit Jupyter notebook cells (replace, insert, delete) |
-| **AskUserQuestion** | Prompt the user with structured choices during execution |
-| **ToolSearch** | Discover tools by keyword or direct selection |
-| **SendMessage** | Inter-agent communication for multi-agent workflows |
-| **EnterPlanMode / ExitPlanMode** | Toggle read-only mode for safe exploration |
-| **EnterWorktree / ExitWorktree** | Manage isolated git worktrees |
-| **TaskCreate / TaskUpdate** | Track progress on multi-step work |
-| **TodoWrite** | Structured todo list management |
-| **Sleep** | Async pause with cancellation support |
-| **McpProxy** | Bridge to any MCP server tool |
-
-## Commands
-
-| Command | What it does |
-|---------|-------------|
-| `/help` | Show all commands and loaded skills |
-| `/clear` | Reset conversation history |
-| `/compact` | Free context by clearing stale tool results |
-| `/cost` | Token usage and estimated cost for the session |
-| `/context` | Context window usage and auto-compact threshold |
-| `/model [name]` | Show or switch the active model |
-| `/diff` | Show current git changes |
-| `/status` | Show git status |
-| `/commit [msg]` | Review diff and create a commit |
-| `/review` | Analyze diff for bugs, security issues, code quality |
-| `/branch [name]` | Show or switch git branch |
-| `/plan` | Toggle plan mode (read-only tools only) |
-| `/resume <id>` | Restore a previous session |
-| `/sessions` | List saved sessions |
-| `/export` | Export conversation to markdown |
-| `/init` | Create `.agent/settings.toml` for this project |
-| `/doctor` | Check environment (tools, config, git, disk) |
-| `/mcp` | List connected MCP servers |
-| `/memory` | Show loaded memory context |
-| `/skills` | List available custom skills |
-| `/agents` | List agent types (general, explore, plan) |
-| `/plugins` | List loaded plugins |
-| `/hooks` | Show hook configuration |
-| `/permissions` | Show permission mode and rules |
-| `/vim`, `/emacs` | Switch editing mode |
-| `/transcript` | Show conversation history |
-| `/bug` | Report a bug |
-| `/verbose` | Toggle verbose output |
-| `/stats` | Session statistics (turns, tokens, cost, tools used) |
-| `/log` | Recent git log |
-| `/files` | List files in working directory |
-| `/tasks` | List background tasks |
-| `/theme` | Show or switch color theme |
-
-## Extending agent-code
-
-### Skills
-
-Skills are reusable workflows defined as markdown files with YAML frontmatter. Drop them in `.agent/skills/` or `~/.config/agent-code/skills/`.
-
-```markdown
----
-description: Run tests and fix failures
-userInvocable: true
----
-
-Run the test suite. If any tests fail, read the failing test and the
-source code it tests, then fix the issue. Run the tests again to verify.
-```
-
-Invoke with `/skill-name` or let the agent pick it up contextually.
-
-### MCP Servers
-
-Connect any [Model Context Protocol](https://modelcontextprotocol.io/) server to add tools. Servers communicate over stdio or HTTP.
-
-```toml
-[mcp_servers.github]
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-github"]
-env = { GITHUB_TOKEN = "ghp_..." }
-```
-
-### Plugins
-
-Plugins bundle skills, hooks, and configuration into installable packages. A plugin is a directory with a `plugin.toml` manifest.
-
-```
-my-plugin/
-  plugin.toml
-  skills/
-    deploy.md
-    rollback.md
-```
-
-### Hooks
-
-Run shell commands or HTTP requests at lifecycle points:
-
-```toml
-# .agent/settings.toml
-[[hooks]]
-event = "post_tool_use"
-tool_name = "FileWrite"
-action = { type = "shell", command = "cargo fmt" }
-```
-
-### Memory
-
-Persistent context that carries across sessions:
-
-- **Project memory:** `.agent/AGENTS.md` in your repo root. Loaded automatically.
-- **User memory:** `~/.config/agent-code/memory/MEMORY.md`. Personal preferences and patterns.
-
-### Enterprise / Security
-
-```toml
-[security]
-# Restrict directories the agent can access
-additional_directories = ["/home/shared/docs"]
-
-# Control which MCP servers are allowed
-mcp_server_allowlist = ["github", "filesystem"]
-mcp_server_denylist = ["untrusted-server"]
-
-# Lock down permissions
-disable_bypass_permissions = true
-
-# Restrict env var access
-env_allowlist = ["HOME", "PATH", "EDITOR"]
-```
-
-### Feature Flags
-
-All features enabled by default. Toggle in config:
-
-```toml
 [features]
-token_budget = true          # Per-turn cost warnings
-commit_attribution = true    # Co-author lines in commits
-compaction_reminders = true  # System message after compaction
-unattended_retry = true      # Extended retry in one-shot mode
-history_snip = true          # /snip command
-auto_theme = true            # System dark/light detection
-fork_conversation = true     # /fork command
-extract_memories = true      # Background memory extraction
-context_collapse = true      # Auto-collapse on compaction
-reactive_compact = true      # Tight-budget auto-compact
+token_budget = true
+extract_memories = true
+auto_theme = true
+
+[security]
+mcp_server_allowlist = ["github", "filesystem"]
+disable_bypass_permissions = true
 ```
+
+## Architecture
+
+```
+crates/
+  lib/   agent-code-lib    Engine: providers, tools, query loop, memory
+  cli/   agent-code        Binary: REPL, TUI, commands, setup wizard
+```
+
+The engine is a reusable library. The binary is a thin wrapper.
 
 ## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, and PR process.
 
 ```bash
 git clone https://github.com/avala-ai/agent-code.git
 cd agent-code
 cargo build
-cargo test
-cargo clippy
+cargo test    # 200 tests
+cargo clippy  # zero warnings
 ```
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
-
----
-
-Built by [Avala AI](https://github.com/avala-ai).
+MIT
