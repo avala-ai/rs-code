@@ -51,6 +51,7 @@ pub struct QueryEngine {
     hooks: HookRegistry,
     cache_tracker: crate::services::cache_tracking::CacheTracker,
     denial_tracker: Arc<tokio::sync::Mutex<crate::permissions::tracking::DenialTracker>>,
+    extraction_state: Arc<tokio::sync::Mutex<crate::memory::extraction::ExtractionState>>,
 }
 
 /// Callback for streaming events to the UI.
@@ -97,6 +98,9 @@ impl QueryEngine {
             cache_tracker: crate::services::cache_tracking::CacheTracker::new(),
             denial_tracker: Arc::new(tokio::sync::Mutex::new(
                 crate::permissions::tracking::DenialTracker::new(100),
+            )),
+            extraction_state: Arc::new(tokio::sync::Mutex::new(
+                crate::memory::extraction::ExtractionState::new(),
             )),
         }
     }
@@ -439,6 +443,22 @@ impl QueryEngine {
                 info!("Turn complete (no tool calls)");
                 sink.on_turn_complete(turn + 1);
                 self.state.is_query_active = false;
+
+                // Fire background memory extraction (fire-and-forget).
+                let extraction_messages = self.state.messages.clone();
+                let extraction_state = self.extraction_state.clone();
+                let extraction_llm = self.llm.clone();
+                let extraction_model = model.clone();
+                tokio::spawn(async move {
+                    crate::memory::extraction::extract_memories_background(
+                        extraction_messages,
+                        extraction_state,
+                        extraction_llm,
+                        extraction_model,
+                    )
+                    .await;
+                });
+
                 return Ok(());
             }
 

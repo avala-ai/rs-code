@@ -19,6 +19,7 @@
 //! Never dump content into the index.
 
 pub mod consolidation;
+pub mod extraction;
 pub mod scanner;
 pub mod session_notes;
 pub mod types;
