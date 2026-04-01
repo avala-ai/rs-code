@@ -158,8 +158,9 @@ impl StreamSink for TerminalSink {
 
 /// Run the interactive REPL loop.
 pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
-    // Configure editing mode (vi if EDITOR contains "vi", else emacs).
+    // Configure editing mode and load custom keybindings.
     let input_mode = super::keymap::InputMode::default();
+    let _keybindings = super::keybindings::KeybindingRegistry::load();
     let rl_config = rustyline::Config::builder()
         .edit_mode(input_mode.to_edit_mode())
         .build();

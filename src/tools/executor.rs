@@ -206,13 +206,22 @@ async fn execute_single_tool(
             };
         }
         PermissionDecision::Ask(prompt) => {
-            // In non-interactive mode, deny. In interactive mode,
-            // this would prompt the user (handled at a higher layer).
-            return ToolCallResult {
-                tool_use_id: call.id.clone(),
-                tool_name: call.name.clone(),
-                result: ToolResult::error(format!("Permission required (would ask): {prompt}")),
-            };
+            // Prompt the user for permission.
+            let description = format!("{}: {}", call.name, prompt);
+            if !crate::ui::prompt::ask_permission(&call.name, &description) {
+                if let Some(ref tracker) = ctx.denial_tracker {
+                    tracker
+                        .lock()
+                        .await
+                        .record(&call.name, &call.id, "user denied", &call.input);
+                }
+                return ToolCallResult {
+                    tool_use_id: call.id.clone(),
+                    tool_name: call.name.clone(),
+                    result: ToolResult::error("Permission denied by user".to_string()),
+                };
+            }
+            // User approved — continue to execution.
         }
     }
 

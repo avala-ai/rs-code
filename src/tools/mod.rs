@@ -37,7 +37,6 @@ pub mod repl_tool;
 pub mod send_message;
 pub mod skill_tool;
 pub mod sleep_tool;
-pub mod streaming_executor;
 pub mod tasks;
 pub mod todo_write;
 pub mod tool_search;

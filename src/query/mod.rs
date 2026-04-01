@@ -33,9 +33,6 @@ use crate::tools::ToolContext;
 use crate::tools::executor::{execute_tool_calls, extract_tool_calls};
 use crate::tools::registry::ToolRegistry;
 
-/// Maximum consecutive rate-limit retries before giving up.
-const MAX_RATE_LIMIT_RETRIES: u32 = 5;
-
 /// Configuration for the query engine.
 pub struct QueryEngineConfig {
     pub max_turns: Option<usize>,
@@ -158,7 +155,8 @@ impl QueryEngine {
 
         let max_turns = self.config.max_turns.unwrap_or(50);
         let mut compact_tracking = CompactTracking::default();
-        let mut rate_limit_retries = 0u32;
+        let mut retry_state = crate::llm::retry::RetryState::default();
+        let retry_config = crate::llm::retry::RetryConfig::default();
         let mut max_output_recovery_count = 0u32;
 
         // Agent loop: budget check → normalize → compact → call LLM → execute tools → repeat.
@@ -276,59 +274,51 @@ impl QueryEngine {
 
             let mut rx = match self.llm.stream(&request).await {
                 Ok(rx) => {
-                    rate_limit_retries = 0;
+                    retry_state.reset();
                     rx
                 }
-                Err(e) => match &e {
-                    ProviderError::RateLimited { retry_after_ms } => {
-                        rate_limit_retries += 1;
-                        if rate_limit_retries > MAX_RATE_LIMIT_RETRIES {
-                            sink.on_error(&format!(
-                                "Rate limited {MAX_RATE_LIMIT_RETRIES} times, giving up"
-                            ));
-                            self.state.is_query_active = false;
-                            return Err(crate::error::Error::Other(e.to_string()));
+                Err(e) => {
+                    let retryable = match &e {
+                        ProviderError::RateLimited { retry_after_ms } => {
+                            crate::llm::retry::RetryableError::RateLimited {
+                                retry_after: *retry_after_ms,
+                            }
                         }
-                        warn!(
-                            "Rate limited (attempt {rate_limit_retries}/{MAX_RATE_LIMIT_RETRIES}), \
-                                 waiting {retry_after_ms}ms"
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(*retry_after_ms)).await;
-                        continue;
-                    }
-                    ProviderError::Overloaded => {
-                        rate_limit_retries += 1;
-                        if rate_limit_retries > MAX_RATE_LIMIT_RETRIES {
-                            sink.on_error("Server overloaded, giving up");
-                            self.state.is_query_active = false;
-                            return Err(crate::error::Error::Other(e.to_string()));
+                        ProviderError::Overloaded => crate::llm::retry::RetryableError::Overloaded,
+                        ProviderError::Network(_) => {
+                            crate::llm::retry::RetryableError::StreamInterrupted
                         }
-                        warn!("Server overloaded, retrying in 5s");
-                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                        continue;
-                    }
-                    ProviderError::RequestTooLarge(body) => {
-                        warn!("Request too large, attempting reactive compact");
-                        let gap = compact::parse_prompt_too_long_gap(body);
-                        let freed = compact::microcompact(&mut self.state.messages, 1);
-                        if freed > 0 {
-                            sink.on_compact(freed);
-                            info!(
-                                "Reactive microcompact freed ~{freed} tokens (gap: {:?})",
-                                gap
-                            );
+                        other => crate::llm::retry::RetryableError::NonRetryable(other.to_string()),
+                    };
+
+                    match retry_state.next_action(&retryable, &retry_config) {
+                        crate::llm::retry::RetryAction::Retry { after } => {
+                            warn!("Retrying in {}ms", after.as_millis());
+                            tokio::time::sleep(after).await;
                             continue;
                         }
-                        sink.on_error("Context too large and compaction failed");
-                        self.state.is_query_active = false;
-                        return Err(crate::error::Error::Other(e.to_string()));
+                        crate::llm::retry::RetryAction::FallbackModel => {
+                            sink.on_warning("Falling back to smaller model");
+                            // TODO: switch model and retry
+                            continue;
+                        }
+                        crate::llm::retry::RetryAction::Abort(reason) => {
+                            // Before giving up, try reactive compact for size errors.
+                            if let ProviderError::RequestTooLarge(body) = &e {
+                                let gap = compact::parse_prompt_too_long_gap(body);
+                                let freed = compact::microcompact(&mut self.state.messages, 1);
+                                if freed > 0 {
+                                    sink.on_compact(freed);
+                                    info!("Reactive compact freed ~{freed} tokens (gap: {gap:?})");
+                                    continue;
+                                }
+                            }
+                            sink.on_error(&reason);
+                            self.state.is_query_active = false;
+                            return Err(crate::error::Error::Other(e.to_string()));
+                        }
                     }
-                    _ => {
-                        sink.on_error(&e.to_string());
-                        self.state.is_query_active = false;
-                        return Err(crate::error::Error::Other(e.to_string()));
-                    }
-                },
+                }
             };
 
             // Step 4: Stream response, submitting tool_use blocks for
