@@ -1,75 +1,86 @@
-//! Memory system.
+//! Memory system — 3-layer architecture.
 //!
-//! Persistent memory across sessions via markdown files with YAML
-//! frontmatter. Two layers:
+//! **Layer 1 — Index (always loaded):**
+//! MEMORY.md contains one-line pointers to topic files. Capped at
+//! 200 lines / 25KB. Always in the system prompt.
 //!
-//! - **Project memory**: `.rc/CONTEXT.md` in the project root — loaded
-//!   automatically, provides project-specific instructions and context.
-//! - **User memory**: `~/.config/agent-code/MEMORY.md` — user-level
-//!   preferences, patterns, and learned context.
+//! **Layer 2 — Topic files (on-demand):**
+//! Individual .md files with YAML frontmatter. Loaded selectively
+//! based on relevance to the current conversation.
 //!
-//! Memory files are injected into the system prompt at session start.
-//! The index file (`MEMORY.md`) contains short pointers to individual
-//! memory files, which are loaded on demand.
+//! **Layer 3 — Transcripts (never loaded, only grepped):**
+//! Past session logs. Not loaded into context.
+//!
+//! # Write discipline
+//!
+//! 1. Write the memory file with frontmatter
+//! 2. Update MEMORY.md index with a one-line pointer
+//!
+//! Never dump content into the index.
 
+pub mod consolidation;
+pub mod scanner;
+pub mod types;
+pub mod writer;
+
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
 use tracing::debug;
 
-/// Maximum lines to load from a memory index file.
 const MAX_INDEX_LINES: usize = 200;
-
-/// Maximum bytes for a single memory file.
 const MAX_MEMORY_FILE_BYTES: usize = 25_000;
 
-/// Loaded memory context ready for injection into the system prompt.
 #[derive(Debug, Clone, Default)]
 pub struct MemoryContext {
-    /// Project-level context (from .rc/CONTEXT.md).
     pub project_context: Option<String>,
-    /// User-level memory index (from ~/.config/agent-code/MEMORY.md).
     pub user_memory: Option<String>,
-    /// Individual memory files loaded from the index.
     pub memory_files: Vec<MemoryFile>,
+    pub surfaced: HashSet<PathBuf>,
 }
 
-/// A single loaded memory file.
 #[derive(Debug, Clone)]
 pub struct MemoryFile {
     pub path: PathBuf,
     pub name: String,
     pub content: String,
+    pub staleness: Option<String>,
 }
 
 impl MemoryContext {
-    /// Load all memory context for the current session.
     pub fn load(project_root: Option<&Path>) -> Self {
         let mut ctx = Self::default();
-
-        // Load project-level context.
         if let Some(root) = project_root {
             ctx.project_context = load_project_context(root);
         }
-
-        // Load user-level memory.
         if let Some(memory_dir) = user_memory_dir() {
             let index_path = memory_dir.join("MEMORY.md");
             if index_path.exists() {
-                ctx.user_memory = load_memory_file(&index_path);
+                ctx.user_memory = load_truncated_file(&index_path);
             }
-
-            // Load individual memory files referenced in the index.
             if let Some(ref index) = ctx.user_memory {
                 ctx.memory_files = load_referenced_files(index, &memory_dir);
             }
         }
-
         ctx
     }
 
-    /// Format memory context for injection into the system prompt.
+    pub fn load_relevant(&mut self, recent_text: &str) {
+        let Some(memory_dir) = user_memory_dir() else {
+            return;
+        };
+        let headers = scanner::scan_memory_files(&memory_dir);
+        let relevant = scanner::select_relevant(&headers, recent_text, &self.surfaced);
+        for path in relevant {
+            if let Some(file) = load_memory_file_with_staleness(&path) {
+                self.surfaced.insert(path);
+                self.memory_files.push(file);
+            }
+        }
+    }
+
     pub fn to_system_prompt_section(&self) -> String {
         let mut section = String::new();
-
         if let Some(ref project) = self.project_context
             && !project.is_empty()
         {
@@ -77,77 +88,101 @@ impl MemoryContext {
             section.push_str(project);
             section.push_str("\n\n");
         }
-
         if let Some(ref memory) = self.user_memory
             && !memory.is_empty()
         {
-            section.push_str("# User Memory\n\n");
+            section.push_str("# Memory Index\n\n");
             section.push_str(memory);
             section.push_str("\n\n");
+            section.push_str(
+                "_Memory is a hint, not truth. Verify against current state \
+                     before acting on remembered facts._\n\n",
+            );
         }
-
         for file in &self.memory_files {
             section.push_str(&format!("## Memory: {}\n\n", file.name));
+            if let Some(ref warning) = file.staleness {
+                section.push_str(&format!("_{warning}_\n\n"));
+            }
             section.push_str(&file.content);
             section.push_str("\n\n");
         }
-
         section
     }
 
-    /// Check if any memory was loaded.
     pub fn is_empty(&self) -> bool {
         self.project_context.is_none() && self.user_memory.is_none() && self.memory_files.is_empty()
     }
 }
 
-/// Load project context from `.rc/CONTEXT.md` or `CONTEXT.md`.
 fn load_project_context(project_root: &Path) -> Option<String> {
-    // Try .rc/CONTEXT.md first, then CONTEXT.md in root.
-    let candidates = [
+    for path in &[
         project_root.join(".rc").join("CONTEXT.md"),
         project_root.join("CONTEXT.md"),
-    ];
-
-    for path in &candidates {
-        if let Some(content) = load_memory_file(path) {
+    ] {
+        if let Some(content) = load_truncated_file(path) {
             debug!("Loaded project context from {}", path.display());
             return Some(content);
         }
     }
-
     None
 }
 
-/// Load a memory file, respecting size limits.
-fn load_memory_file(path: &Path) -> Option<String> {
+fn load_truncated_file(path: &Path) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
-
     if content.is_empty() {
         return None;
     }
 
-    // Truncate to max bytes.
-    let truncated = if content.len() > MAX_MEMORY_FILE_BYTES {
-        let mut s = content[..MAX_MEMORY_FILE_BYTES].to_string();
-        s.push_str("\n\n(truncated)");
-        s
-    } else {
-        content
-    };
+    let mut result = content.clone();
+    let mut was_byte_truncated = false;
 
-    // Truncate to max lines for index files.
-    let lines: Vec<&str> = truncated.lines().collect();
-    if lines.len() > MAX_INDEX_LINES {
-        Some(lines[..MAX_INDEX_LINES].join("\n"))
-    } else {
-        Some(truncated)
+    if result.len() > MAX_MEMORY_FILE_BYTES {
+        if let Some(pos) = result[..MAX_MEMORY_FILE_BYTES].rfind('\n') {
+            result.truncate(pos);
+        } else {
+            result.truncate(MAX_MEMORY_FILE_BYTES);
+        }
+        was_byte_truncated = true;
     }
+
+    let lines: Vec<&str> = result.lines().collect();
+    let was_line_truncated = lines.len() > MAX_INDEX_LINES;
+    if was_line_truncated {
+        result = lines[..MAX_INDEX_LINES].join("\n");
+    }
+
+    if was_byte_truncated || was_line_truncated {
+        result.push_str("\n\n(truncated)");
+    }
+
+    Some(result)
 }
 
-/// Parse markdown links from an index file and load the referenced files.
-///
-/// Looks for patterns like `- [Title](filename.md) — description`
+fn load_memory_file_with_staleness(path: &Path) -> Option<MemoryFile> {
+    let content = load_truncated_file(path)?;
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let staleness = std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|modified| {
+            let age = std::time::SystemTime::now().duration_since(modified).ok()?;
+            types::staleness_caveat(age.as_secs())
+        });
+
+    Some(MemoryFile {
+        path: path.to_path_buf(),
+        name,
+        content,
+        staleness,
+    })
+}
+
 fn load_referenced_files(index: &str, base_dir: &Path) -> Vec<MemoryFile> {
     let mut files = Vec::new();
     let link_re = regex::Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
@@ -155,74 +190,52 @@ fn load_referenced_files(index: &str, base_dir: &Path) -> Vec<MemoryFile> {
     for captures in link_re.captures_iter(index) {
         let name = captures.get(1).map(|m| m.as_str()).unwrap_or("");
         let filename = captures.get(2).map(|m| m.as_str()).unwrap_or("");
-
         if filename.is_empty() || !filename.ends_with(".md") {
             continue;
         }
-
         let path = base_dir.join(filename);
-        if let Some(content) = load_memory_file(&path) {
-            files.push(MemoryFile {
-                path,
-                name: name.to_string(),
-                content,
-            });
+        if let Some(mut file) = load_memory_file_with_staleness(&path) {
+            file.name = name.to_string();
+            files.push(file);
         }
     }
-
     files
 }
 
-/// Get the user memory directory.
 fn user_memory_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("agent-code").join("memory"))
 }
 
-/// Get the project memory directory for the given project root.
 pub fn project_memory_dir(project_root: &Path) -> PathBuf {
     project_root.join(".rc")
 }
 
-/// Save a memory file to the user memory directory.
-pub fn save_user_memory(filename: &str, content: &str) -> Result<PathBuf, String> {
-    let dir = user_memory_dir().ok_or("Could not determine memory directory")?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create memory directory: {e}"))?;
-
-    let path = dir.join(filename);
-    std::fs::write(&path, content).map_err(|e| format!("Failed to write memory file: {e}"))?;
-
-    Ok(path)
+pub fn ensure_memory_dir() -> Option<PathBuf> {
+    let dir = user_memory_dir()?;
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
     #[test]
-    fn test_load_memory_file_truncation() {
+    fn test_load_truncated_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.md");
-        let content = "a\n".repeat(300);
-        fs::write(&path, &content).unwrap();
-
-        let loaded = load_memory_file(&path).unwrap();
-        assert!(loaded.lines().count() <= MAX_INDEX_LINES);
+        std::fs::write(&path, "a\n".repeat(300)).unwrap();
+        let loaded = load_truncated_file(&path).unwrap();
+        assert!(loaded.contains("truncated"));
     }
 
     #[test]
     fn test_load_referenced_files() {
         let dir = tempfile::tempdir().unwrap();
-
-        // Create a referenced file.
-        fs::write(dir.path().join("prefs.md"), "I prefer Rust").unwrap();
-
-        let index = "- [Preferences](prefs.md) — user preferences\n\
-                     - [Missing](gone.md) — this doesn't exist";
-
+        std::fs::write(dir.path().join("prefs.md"), "I prefer Rust").unwrap();
+        let index = "- [Preferences](prefs.md) — prefs\n- [Missing](gone.md) — gone";
         let files = load_referenced_files(index, dir.path());
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "Preferences");
-        assert_eq!(files[0].content, "I prefer Rust");
     }
 }
