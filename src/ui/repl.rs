@@ -156,20 +156,26 @@ impl StreamSink for TerminalSink {
     fn on_tool_start(&self, tool_name: &str, input: &serde_json::Value) {
         self.stop_indicator();
         self.ensure_newline();
+        let t = super::theme::current();
         let label = format!(" {tool_name} ");
         let detail = summarize_tool_input(tool_name, input);
         eprintln!(
             "{} {}",
-            label.on_dark_cyan().white().bold(),
-            detail.dark_grey()
+            super::theme::label(&label, t.tool, crossterm::style::Color::Black),
+            detail.with(t.muted)
         );
     }
 
     fn on_tool_result(&self, tool_name: &str, result: &ToolResult) {
         if result.is_error {
+            let t = super::theme::current();
             let label = format!(" {tool_name} ERROR ");
             let first_line = result.content.lines().next().unwrap_or("");
-            eprintln!("{} {}", label.on_red().white().bold(), first_line.red());
+            eprintln!(
+                "{} {}",
+                super::theme::label(&label, t.error, crossterm::style::Color::White),
+                first_line.with(t.error)
+            );
         }
         // Restart indicator — LLM will be called again with tool results.
         self.restart_indicator();
@@ -181,7 +187,7 @@ impl StreamSink for TerminalSink {
         if text.len() > 80 {
             eprint!(
                 "\r{}\r",
-                format!("  thinking ({} chars)...", text.len()).dark_grey()
+                format!("  thinking ({} chars)...", text.len()).with(super::theme::current().muted)
             );
         }
     }
@@ -190,14 +196,21 @@ impl StreamSink for TerminalSink {
         self.stop_indicator();
         self.ensure_newline();
         if self.verbose {
-            eprintln!("{}", format!("  (turn {turn} complete)").dark_grey());
+            eprintln!(
+                "{}",
+                format!("  (turn {turn} complete)").with(super::theme::current().muted)
+            );
         }
     }
 
     fn on_error(&self, error: &str) {
         self.stop_indicator();
         self.ensure_newline();
-        eprintln!("{} {error}", " ERROR ".on_red().white().bold());
+        let t = super::theme::current();
+        eprintln!(
+            "{} {error}",
+            super::theme::label(" ERROR ", t.error, crossterm::style::Color::White)
+        );
     }
 
     fn on_usage(&self, usage: &Usage) {
@@ -216,7 +229,7 @@ impl StreamSink for TerminalSink {
                     "  tokens: {}in + {}out{cache_info}",
                     usage.input_tokens, usage.output_tokens
                 )
-                .dark_grey()
+                .with(super::theme::current().muted)
             );
         }
     }
@@ -224,12 +237,16 @@ impl StreamSink for TerminalSink {
     fn on_compact(&self, freed_tokens: u64) {
         eprintln!(
             "{}",
-            format!("  compacted ~{freed_tokens} tokens").dark_grey()
+            format!("  compacted ~{freed_tokens} tokens").with(super::theme::current().muted)
         );
     }
 
     fn on_warning(&self, msg: &str) {
-        eprintln!("{} {msg}", " WARN ".on_yellow().black().bold());
+        let t = super::theme::current();
+        eprintln!(
+            "{} {msg}",
+            super::theme::label(" WARN ", t.warning, crossterm::style::Color::Black)
+        );
     }
 }
 
@@ -275,27 +292,33 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     let model = engine.state().config.api.model.clone();
     let cwd = engine.state().cwd.clone();
 
+    // Initialize theme.
+    let theme_name = super::theme::resolve_theme(&engine.state().config.ui.theme);
+    super::theme::init(&theme_name);
+    let t = super::theme::current();
+
     println!();
     println!(
         "  {}   agent-code v{}",
-        "▐▛██▜▌".dark_cyan().bold(),
+        "▐▛██▜▌".with(t.accent).bold(),
         env!("CARGO_PKG_VERSION"),
     );
     println!(
         "  {}  {} · session {}",
-        "▝▜██▛▘".dark_cyan(),
-        model.white().bold(),
-        session_id_display.as_str().dark_grey(),
+        "▝▜██▛▘".with(t.accent),
+        model.with(t.text).bold(),
+        session_id_display.as_str().with(t.muted),
     );
-    println!("  {}   {}", "  ▘▘  ".dark_cyan(), cwd.dark_grey(),);
+    println!("  {}   {}", "  ▘▘  ".with(t.accent), cwd.with(t.muted),);
     println!();
-    println!("{}", divider.dark_grey());
+    println!("{}", divider.with(t.muted));
 
     let mut ctrl_c_pending = false;
 
     loop {
         let sink = TerminalSink::new(verbose);
-        let prompt = format!("{} ", "❯".dark_cyan().bold());
+        let t = super::theme::current();
+        let prompt = format!("{} ", "❯".with(t.accent).bold());
 
         match rl.readline(&prompt) {
             Ok(line) => {
@@ -306,7 +329,7 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                 while input_buf.trim_end().ends_with('\\') {
                     input_buf.truncate(input_buf.trim_end().len() - 1);
                     input_buf.push('\n');
-                    let cont_prompt = format!("{} ", ".".dark_grey());
+                    let cont_prompt = format!("{} ", ".".with(t.muted));
                     match rl.readline(&cont_prompt) {
                         Ok(next) => input_buf.push_str(&next),
                         Err(_) => break,
@@ -328,7 +351,17 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                         crate::commands::CommandResult::Passthrough(text) => {
                             sink.start_indicator();
                             if let Err(e) = engine.run_turn_with_sink(&text, &sink).await {
-                                eprintln!("{} {e}", " ERROR ".on_red().white().bold());
+                                {
+                                    let t = super::theme::current();
+                                    eprintln!(
+                                        "{} {e}",
+                                        super::theme::label(
+                                            " ERROR ",
+                                            t.error,
+                                            crossterm::style::Color::White
+                                        )
+                                    );
+                                }
                             }
                             sink.ensure_newline();
                             println!();
@@ -336,7 +369,17 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                         crate::commands::CommandResult::Prompt(prompt) => {
                             sink.start_indicator();
                             if let Err(e) = engine.run_turn_with_sink(&prompt, &sink).await {
-                                eprintln!("{} {e}", " ERROR ".on_red().white().bold());
+                                {
+                                    let t = super::theme::current();
+                                    eprintln!(
+                                        "{} {e}",
+                                        super::theme::label(
+                                            " ERROR ",
+                                            t.error,
+                                            crossterm::style::Color::White
+                                        )
+                                    );
+                                }
                             }
                             sink.ensure_newline();
                             println!();
@@ -348,7 +391,13 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
                 // Run the agent turn. Start the indicator now (after input is captured).
                 sink.start_indicator();
                 if let Err(e) = engine.run_turn_with_sink(input, &sink).await {
-                    eprintln!("{} {e}", " ERROR ".on_red().white().bold());
+                    {
+                        let t = super::theme::current();
+                        eprintln!(
+                            "{} {e}",
+                            super::theme::label(" ERROR ", t.error, crossterm::style::Color::White)
+                        );
+                    }
                 }
                 sink.ensure_newline();
                 println!();
@@ -356,14 +405,17 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
             Err(ReadlineError::Interrupted) => {
                 if engine.state().is_query_active {
                     engine.cancel();
-                    eprintln!("{}", "(cancelled)".dark_grey());
+                    eprintln!("{}", "(cancelled)".with(super::theme::current().muted));
                     ctrl_c_pending = false;
                 } else if ctrl_c_pending {
                     // Second Ctrl+C at prompt — exit.
                     break;
                 } else {
                     // First Ctrl+C at prompt — show hint, continue.
-                    eprintln!("{}", "(Ctrl+C again to exit, or type /exit)".dark_grey());
+                    eprintln!(
+                        "{}",
+                        "(Ctrl+C again to exit, or type /exit)".with(super::theme::current().muted)
+                    );
                     ctrl_c_pending = true;
                 }
             }
@@ -393,27 +445,31 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
             state.turn_count,
         ) {
             Ok(_) => {}
-            Err(e) => eprintln!("{}", format!("Failed to save session: {e}").dark_grey()),
+            Err(e) => eprintln!(
+                "{}",
+                format!("Failed to save session: {e}").with(super::theme::current().muted)
+            ),
         }
     }
 
     // Print session summary.
     let divider = "─".repeat(term_width.min(100));
-    println!("{}", divider.dark_grey());
+    let t = super::theme::current();
+    println!("{}", divider.with(t.muted));
     if state.total_usage.total() > 0 {
         println!(
             "  {} {} turns | {} tokens | ${:.4} | session {}",
-            "session".dark_cyan(),
+            "session".with(t.accent),
             state.turn_count,
             state.total_usage.total(),
             state.total_cost_usd,
-            session_id_display.as_str().dark_grey(),
+            session_id_display.as_str().with(t.muted),
         );
     } else {
         println!(
             "  {} session {}",
-            "goodbye".dark_cyan(),
-            session_id_display.as_str().dark_grey()
+            "goodbye".with(t.accent),
+            session_id_display.as_str().with(t.muted)
         );
     }
 
