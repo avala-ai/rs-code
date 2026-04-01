@@ -405,9 +405,12 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
     };
 
     // Set scroll region: rows 1 to (height-1), pinning last row.
+    // Then move cursor to bottom of scroll region so text fills from bottom up.
     let setup_scroll_region = || {
         let (_w, h) = crossterm::terminal::size().unwrap_or((80, 24));
-        eprint!("\x1b[1;{}r", h - 1);
+        let scroll_bottom = h - 1;
+        // Set scroll region, then move cursor to the bottom of that region.
+        eprint!("\x1b[1;{scroll_bottom}r\x1b[{scroll_bottom};1H");
         let _ = std::io::stderr().flush();
     };
 
