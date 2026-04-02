@@ -179,7 +179,7 @@ pub async fn run_consolidation(
             output
         }
         Err(e) => {
-            warn!("Memory consolidation API call failed: {e}");
+            tracing::debug!("Memory consolidation skipped (API error): {e}");
             rollback_lock(lock_path);
             return;
         }

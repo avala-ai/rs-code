@@ -141,23 +141,19 @@ async fn main() -> anyhow::Result<()> {
         };
     }
 
-    // If no API key found and interactive, offer setup or hint the right env var.
-    if config.api.api_key.is_none()
-        && cli.prompt.is_none()
-        && cli.api_key.is_none()
-        && !cli.dump_system_prompt
-    {
-        if ui::setup::needs_setup() {
-            // First time — run full wizard.
-            run_setup_wizard();
-            config = Config::load()?;
-        } else {
-            // Config exists but no key in env. Re-run setup wizard
-            // so user can paste their key interactively.
-            eprintln!("No API key found. Starting setup...\n");
-            run_setup_wizard();
-            config = Config::load()?;
-        }
+    // Determine the effective API key: CLI flag > env var (in config) > config file.
+    // If nothing found and interactive, run the setup wizard.
+    let has_key = cli.api_key.is_some() || config.api.api_key.is_some();
+
+    if !has_key && cli.prompt.is_none() && !cli.dump_system_prompt {
+        eprintln!("No API key found. Starting setup...\n");
+        run_setup_wizard();
+        config = Config::load()?;
+    }
+
+    // CLI --api-key overrides everything.
+    if let Some(ref key) = cli.api_key {
+        config.api.api_key = Some(key.clone());
     }
 
     let api_key = config.api.api_key.as_deref().ok_or_else(|| {
@@ -272,8 +268,9 @@ async fn main() -> anyhow::Result<()> {
     // Load hooks from config.
     engine.load_hooks(&config.hooks);
 
-    // Run memory consolidation in the background if due.
-    if let Some(memory_dir) = agent_code_lib::memory::ensure_memory_dir()
+    // Run memory consolidation in the background if due and feature enabled.
+    if config.features.extract_memories
+        && let Some(memory_dir) = agent_code_lib::memory::ensure_memory_dir()
         && agent_code_lib::memory::consolidation::should_consolidate(&memory_dir)
         && let Some(lock_path) =
             agent_code_lib::memory::consolidation::try_acquire_lock(&memory_dir)
