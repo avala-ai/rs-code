@@ -376,7 +376,7 @@ async fn main() -> anyhow::Result<()> {
             println!();
         }
         None => {
-            ui::repl::run_repl(&mut engine).await?;
+            ui::tui_repl::run_tui_repl(&mut engine).await?;
         }
     }
 

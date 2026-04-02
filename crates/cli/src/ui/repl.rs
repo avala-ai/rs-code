@@ -775,7 +775,7 @@ pub async fn run_repl(engine: &mut QueryEngine) -> anyhow::Result<()> {
 }
 
 /// Create a short summary of tool input for display.
-fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
+pub fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
     let raw = match tool_name {
         "Bash" => input
             .get("command")
@@ -823,7 +823,7 @@ fn summarize_tool_input(tool_name: &str, input: &serde_json::Value) -> String {
 
 /// Expand @path references in user input to include file contents.
 /// e.g., "explain @src/main.rs" → "explain\n\nContents of src/main.rs:\n```\n...```"
-fn expand_file_references(input: &str, cwd: &str) -> String {
+pub fn expand_file_references(input: &str, cwd: &str) -> String {
     let mut result = String::new();
     let mut last_end = 0;
 

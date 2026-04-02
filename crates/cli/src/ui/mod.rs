@@ -13,3 +13,4 @@ pub mod selector;
 pub mod setup;
 pub mod theme;
 pub mod tui;
+pub mod tui_repl;
