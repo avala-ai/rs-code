@@ -206,6 +206,7 @@ async fn main() -> anyhow::Result<()> {
         "mistral" => ProviderKind::Mistral,
         "together" => ProviderKind::Together,
         "zhipu" | "glm" | "z.ai" => ProviderKind::Zhipu,
+        "azure" | "azure-openai" => ProviderKind::AzureOpenAi,
         _ => detect_provider(&config.api.model, &config.api.base_url),
     };
 
@@ -215,17 +216,27 @@ async fn main() -> anyhow::Result<()> {
     {
         config.api.base_url = default_url.to_string();
     }
-    let mut llm: Arc<dyn agent_code_lib::llm::provider::Provider> = match provider_kind
-        .wire_format()
-    {
-        WireFormat::Anthropic => Arc::new(agent_code_lib::llm::anthropic::AnthropicProvider::new(
-            &config.api.base_url,
-            api_key,
-        )),
-        WireFormat::OpenAiCompatible => Arc::new(agent_code_lib::llm::openai::OpenAiProvider::new(
-            &config.api.base_url,
-            api_key,
-        )),
+    let mut llm: Arc<dyn agent_code_lib::llm::provider::Provider> = match provider_kind {
+        ProviderKind::AzureOpenAi => {
+            Arc::new(agent_code_lib::llm::azure_openai::AzureOpenAiProvider::new(
+                &config.api.base_url,
+                api_key,
+            ))
+        }
+        _ => match provider_kind.wire_format() {
+            WireFormat::Anthropic => {
+                Arc::new(agent_code_lib::llm::anthropic::AnthropicProvider::new(
+                    &config.api.base_url,
+                    api_key,
+                ))
+            }
+            WireFormat::OpenAiCompatible => {
+                Arc::new(agent_code_lib::llm::openai::OpenAiProvider::new(
+                    &config.api.base_url,
+                    api_key,
+                ))
+            }
+        },
     };
     tracing::info!(
         "Using {:?} provider at {}",
@@ -273,19 +284,27 @@ async fn main() -> anyhow::Result<()> {
                 .api_key
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("API key required after setup."))?;
-            llm = match provider_kind.wire_format() {
-                WireFormat::Anthropic => {
-                    Arc::new(agent_code_lib::llm::anthropic::AnthropicProvider::new(
+            llm = match provider_kind {
+                ProviderKind::AzureOpenAi => {
+                    Arc::new(agent_code_lib::llm::azure_openai::AzureOpenAiProvider::new(
                         &config.api.base_url,
                         api_key_new,
                     ))
                 }
-                WireFormat::OpenAiCompatible => {
-                    Arc::new(agent_code_lib::llm::openai::OpenAiProvider::new(
-                        &config.api.base_url,
-                        api_key_new,
-                    ))
-                }
+                _ => match provider_kind.wire_format() {
+                    WireFormat::Anthropic => {
+                        Arc::new(agent_code_lib::llm::anthropic::AnthropicProvider::new(
+                            &config.api.base_url,
+                            api_key_new,
+                        ))
+                    }
+                    WireFormat::OpenAiCompatible => {
+                        Arc::new(agent_code_lib::llm::openai::OpenAiProvider::new(
+                            &config.api.base_url,
+                            api_key_new,
+                        ))
+                    }
+                },
             };
         }
     }
