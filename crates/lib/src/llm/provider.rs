@@ -126,6 +126,9 @@ pub fn detect_provider(model: &str, base_url: &str) -> ProviderKind {
     {
         return ProviderKind::Zhipu;
     }
+    if url_lower.contains("openrouter.ai") {
+        return ProviderKind::OpenRouter;
+    }
     if url_lower.contains("localhost") || url_lower.contains("127.0.0.1") {
         return ProviderKind::OpenAiCompatible;
     }
@@ -189,6 +192,7 @@ pub enum ProviderKind {
     Mistral,
     Together,
     Zhipu,
+    OpenRouter,
     OpenAiCompatible,
 }
 
@@ -205,6 +209,7 @@ impl ProviderKind {
             | Self::Mistral
             | Self::Together
             | Self::Zhipu
+            | Self::OpenRouter
             | Self::OpenAiCompatible => WireFormat::OpenAiCompatible,
         }
     }
@@ -223,6 +228,7 @@ impl ProviderKind {
             Self::Mistral => Some("https://api.mistral.ai/v1"),
             Self::Together => Some("https://api.together.xyz/v1"),
             Self::Zhipu => Some("https://open.bigmodel.cn/api/paas/v4"),
+            Self::OpenRouter => Some("https://openrouter.ai/api/v1"),
             // These require user-supplied URLs.
             Self::Bedrock | Self::Vertex | Self::OpenAiCompatible => None,
         }
@@ -240,6 +246,7 @@ impl ProviderKind {
             Self::Mistral => "MISTRAL_API_KEY",
             Self::Together => "TOGETHER_API_KEY",
             Self::Zhipu => "ZHIPU_API_KEY",
+            Self::OpenRouter => "OPENROUTER_API_KEY",
             Self::OpenAiCompatible => "OPENAI_API_KEY",
         }
     }
@@ -318,6 +325,14 @@ mod tests {
         assert!(matches!(
             detect_provider("any", "https://api.together.xyz/v1"),
             ProviderKind::Together
+        ));
+    }
+
+    #[test]
+    fn test_detect_from_url_openrouter() {
+        assert!(matches!(
+            detect_provider("any", "https://openrouter.ai/api/v1"),
+            ProviderKind::OpenRouter
         ));
     }
 

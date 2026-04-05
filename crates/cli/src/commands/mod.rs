@@ -476,6 +476,14 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                         ("glm-4.6-air", "GLM-4.6 Air · Fast"),
                         ("glm-4.5", "GLM-4.5 · Previous gen"),
                     ],
+                    ProviderKind::OpenRouter => vec![
+                        ("anthropic/claude-sonnet-4", "Claude Sonnet 4 · Balanced"),
+                        ("anthropic/claude-opus-4", "Claude Opus 4 · Most capable"),
+                        ("openai/gpt-4.1", "GPT-4.1 · Balanced"),
+                        ("openai/gpt-4.1-mini", "GPT-4.1 Mini · Fast"),
+                        ("google/gemini-2.5-flash", "Gemini 2.5 Flash · Fast"),
+                        ("meta-llama/llama-3.3-70b", "Llama 3.3 70B · Open"),
+                    ],
                     _ => vec![],
                 };
 
