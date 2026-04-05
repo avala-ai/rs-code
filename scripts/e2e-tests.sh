@@ -6,7 +6,7 @@
 #
 # Requirements:
 #   - AGENT_BINARY env var (path to compiled agent binary)
-#   - OPENAI_API_KEY env var (for LLM-backed tests)
+#   - AGENT_CODE_API_KEY env var (for LLM-backed tests)
 #   - AGENT_CODE_MODEL env var (defaults to gpt-4.1-mini)
 #   - ripgrep (rg) installed
 #   - jq installed
@@ -18,7 +18,7 @@ set -uo pipefail
 # ── Configuration ──────────────────────────────────────────────────
 
 AGENT="${AGENT_BINARY:-./target/release/agent}"
-MODEL="${AGENT_CODE_MODEL:-gpt-4.1-mini}"
+MODEL="${AGENT_CODE_MODEL:-openai/gpt-4.1-mini}"
 SERVE_PORT=14096
 SERVE_URL="http://127.0.0.1:${SERVE_PORT}"
 API_TIMEOUT=120
@@ -196,8 +196,8 @@ fi
 
 section "B: One-shot Mode (API calls)"
 
-if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-    echo "  SKIP: OPENAI_API_KEY not set, skipping API tests"
+if [[ -z "${AGENT_CODE_API_KEY:-}" ]]; then
+    echo "  SKIP: AGENT_CODE_API_KEY not set, skipping API tests"
 else
 
     # B1: Simple echo
@@ -244,7 +244,7 @@ else
     if [[ "${HTTP_CODE}" == "200" ]] && [[ "${HTTP_BODY}" == "ok" ]]; then
         pass "C1: GET /health → 200 ok"
     else
-        fail "C1: GET /health" "Expected 200/ok, got ${HTTP_CODE}/${body:0:100}"
+        fail "C1: GET /health" "Expected 200/ok, got ${HTTP_CODE}/${HTTP_BODY:0:100}"
     fi
 
     # C2: Status
@@ -255,7 +255,7 @@ else
         && echo "${HTTP_BODY}" | jq -e '.version' > /dev/null 2>&1; then
         pass "C2: GET /status → JSON with required fields"
     else
-        fail "C2: GET /status" "Missing fields. Code=${HTTP_CODE}, body=${body:0:200}"
+        fail "C2: GET /status" "Missing fields. Code=${HTTP_CODE}, body=${HTTP_BODY:0:200}"
     fi
 
     # C3: Message (valid)
@@ -271,7 +271,7 @@ else
             pass "C3: POST /message → valid JSON (PONG not in response, but structure OK)"
         fi
     else
-        fail "C3: POST /message" "Bad response. Code=${HTTP_CODE}, body=${body:0:200}"
+        fail "C3: POST /message" "Bad response. Code=${HTTP_CODE}, body=${HTTP_BODY:0:200}"
     fi
 
     # C4: Missing content
@@ -442,9 +442,9 @@ else
     fi
 
     # H3: Session persistence
-    api_post "/message" '{"content":"Remember this code word: BANANA42. Just confirm you remember it."}' 
+    api_post "/message" '{"content":"The secret code is BANANA42. Reply with: I have noted the code BANANA42."}'
     sleep 1
-    api_post "/message" '{"content":"What was the code word I told you to remember? Reply with just the code word."}'
+    api_post "/message" '{"content":"What was the secret code from my previous message? Reply with only the code, nothing else."}'
     resp=$(echo "${HTTP_BODY}" | jq -r '.response' 2>/dev/null || echo "")
     if echo "${resp}" | grep -q "BANANA42"; then
         pass "H3: Session persistence (recalled BANANA42)"
@@ -484,7 +484,7 @@ section "G: Config System"
 # G1: AGENT_CODE_MODEL env var is picked up
 # We already set it, so --dump-system-prompt should work. Check via
 # a quick serve start/status if API key is available.
-if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+if [[ -n "${AGENT_CODE_API_KEY:-}" ]]; then
     # Start a fresh serve instance just for config check.
     "${AGENT}" --serve --port 14097 --dangerously-skip-permissions \
         -C "${WORKDIR}" > /tmp/agent-serve-config.log 2>&1 &

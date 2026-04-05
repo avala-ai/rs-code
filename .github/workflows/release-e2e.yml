@@ -28,5 +28,6 @@ jobs:
         run: chmod +x scripts/e2e-tests.sh && scripts/e2e-tests.sh
         env:
           AGENT_BINARY: target/release/agent
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          AGENT_CODE_MODEL: gpt-4.1-mini
+          AGENT_CODE_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          AGENT_CODE_API_BASE_URL: https://openrouter.ai/api/v1
+          AGENT_CODE_MODEL: openai/gpt-4.1-mini
