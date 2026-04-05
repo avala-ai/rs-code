@@ -12,7 +12,7 @@ Status key: **Planned** | **In Progress** | **Done**
 |------|--------|
 | Rust workspace (lib + cli) | 24K+ LOC, 95+ source files |
 | Built-in tools | 32 (file ops, search, shell, web, LSP, MCP, agents, tasks) |
-| Slash commands | 42 (session, context, git, agent control, config, diagnostics, history, sharing) |
+| Slash commands | 43 (session, context, git, agent control, config, diagnostics, history, sharing, update) |
 | Bundled skills | 12 (commit, review, test, explain, debug, pr, refactor, init, security-review, advisor, bughunter, plan) |
 | LLM providers | 12 (Anthropic, OpenAI, xAI, Google, DeepSeek, Groq, Mistral, Together, Zhipu, Ollama, Bedrock, Vertex) |
 | Tests | 220+ (unit + integration + smoke) |
@@ -80,9 +80,9 @@ Good documentation is the highest-leverage improvement. Every other phase benefi
 - [x] Add security section, skills table, commands section
 - [x] Link to CONTRIBUTING.md and ROADMAP.md
 
-### 1.9 Rustdoc for Library Crate
+### 1.9 Rustdoc for Library Crate — Done
 
-- [ ] Add top-level rustdoc to `crates/lib/src/lib.rs` with feature overview and examples
+- [x] Top-level rustdoc with module table, quick example, custom Tool example
 - [ ] Add `///` doc comments to ~30 key public structs and functions
 - [ ] Publish rustdoc via CI (GitHub Pages or docs.rs)
 
@@ -105,12 +105,13 @@ Good documentation is the highest-leverage improvement. Every other phase benefi
 - [x] `Skill::expand_safe()` strips fenced shell blocks when enabled
 - [x] Non-shell code blocks preserved
 
-### 2.3 Plugin Executable Support
+### 2.3 Plugin Executable Support — Done
 
-- [ ] Create `crates/lib/src/tools/plugin_exec.rs` implementing the `Tool` trait for plugin-provided executables
-- [ ] Scan `bin/` directories inside plugin folders during plugin loading
-- [ ] Register discovered executables as callable tools (JSON stdin/stdout protocol)
-- [ ] Document `bin/` support in `docs/extending/plugins.mdx`
+- [x] `PluginExecTool` implementing the `Tool` trait
+- [x] `discover_plugin_executables()` scans `bin/` directories
+- [x] Cross-platform: Unix permission check, Windows `.exe` check
+- [x] Tools namespaced as `plugin__<name>__<binary>`
+- [x] `PluginRegistry::executable_tools()` returns discovered tools
 
 ### 2.4 Remote Skill Discovery (Stretch)
 
@@ -191,16 +192,16 @@ All commands are added to `crates/cli/src/commands/mod.rs`.
 - [x] `crates/lib/tests/skills_integration.rs` — 6 tests: bundled loading, finding by name, custom skill from temp dir, override, directory skills
 - [x] `crates/lib/tests/config_integration.rs` — 5 tests: defaults, TOML parsing, security config, features, MCP entries
 
-### 5.3 Benchmarks
+### 5.3 Benchmarks — Done
 
-- [ ] `crates/lib/benches/compaction.rs` — benchmark micro-compact on conversation histories of various sizes
-- [ ] `crates/lib/benches/token_estimation.rs` — benchmark token counting on large message arrays
+- [x] `crates/lib/benches/compaction.rs` — microcompact at 10, 50, 100, 500 turns
+- [x] `crates/lib/benches/token_estimation.rs` — estimate_tokens + estimate_context_tokens
 
-### 5.4 Coverage Reporting
+### 5.4 Coverage Reporting — Done
 
-- [ ] Add `cargo-tarpaulin` step to `.github/workflows/ci.yml`
-- [ ] Upload to Codecov or Coveralls
-- [ ] Add coverage badge to README
+- [x] cargo-tarpaulin in CI with Cobertura XML output
+- [x] Codecov upload
+- [x] Coverage badge in README
 
 ### 5.5 Per-Agent Permissions (Stretch)
 
@@ -233,12 +234,12 @@ All commands are added to `crates/cli/src/commands/mod.rs`.
 - [x] Read access unaffected
 - [x] Cross-platform path handling (forward and backslash)
 
-### 6.4 Self-Update Mechanism
+### 6.4 Self-Update Mechanism — Done
 
-- [ ] Create `crates/cli/src/update.rs`
-- [ ] Check GitHub releases API for newer version on startup (with 24h cooldown)
-- [ ] `agent --update` flag to download and replace binary
-- [ ] Print update notification in REPL banner when available
+- [x] `crates/cli/src/update.rs` with GitHub releases API check
+- [x] Background check on REPL startup (24h cooldown, 5s timeout)
+- [x] `/update` command (alias: `/upgrade`) for manual check
+- [x] Post-session notification if newer version found
 
 ### 6.5 npm Wrapper Package (Stretch)
 
@@ -311,8 +312,8 @@ These are tracked for future exploration. Not committed to a timeline.
 | Tool dispatch overhead | unmeasured | <1ms per tool call |
 | Binary size (release) | ~15MB | <12MB (strip + LTO) |
 | Context compaction latency | unmeasured | <500ms for microcompact |
-| Tests | 220+ | 400+ |
-| Test coverage | unmeasured | >70% |
+| Tests | 225+ | 400+ |
+| Test coverage | Codecov active | >70% |
 | Supported platforms | 5 (+ Windows + Docker) | 6 (+ npm wrapper) |
 
 ---

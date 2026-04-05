@@ -123,11 +123,11 @@ crates/
 
 The engine is a reusable library. The binary is a thin wrapper.
 
-## 42 Slash Commands
+## 43 Slash Commands
 
 Session management, context control, git operations, agent coordination, configuration, diagnostics, and more. [Full list →](docs/reference/commands.mdx)
 
-Highlights: `/release-notes`, `/summary`, `/feedback`, `/share`, `/doctor`, `/plan`, `/model`, `/cost`, `/scroll`, `/rewind`, `/fork`
+Highlights: `/release-notes`, `/summary`, `/feedback`, `/share`, `/update`, `/doctor`, `/plan`, `/model`, `/cost`, `/scroll`, `/rewind`, `/fork`
 
 ## Security
 
@@ -148,7 +148,7 @@ Protected directories (`.git/`, `.husky/`, `node_modules/`) are blocked from wri
 git clone https://github.com/avala-ai/agent-code.git
 cd agent-code
 cargo build
-cargo test    # 220+ tests
+cargo test    # 225+ tests
 cargo clippy  # zero warnings
 ```
 
