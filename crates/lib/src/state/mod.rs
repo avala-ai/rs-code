@@ -9,6 +9,10 @@ use crate::config::Config;
 use crate::llm::message::{Message, Usage};
 
 /// Global application state for the session.
+///
+/// Tracks the conversation history, token usage, cost, model config,
+/// and per-model breakdowns. Mutated by the query engine during turns
+/// and read by commands like `/cost`, `/status`, `/stats`.
 pub struct AppState {
     /// Configuration snapshot.
     pub config: Config,

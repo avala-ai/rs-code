@@ -162,6 +162,10 @@ impl PermissionPrompter for AutoAllowPrompter {
 }
 
 /// Context passed to every tool during execution.
+///
+/// Provides the working directory, cancellation token, permission
+/// checker, file cache, and other shared state. Created by the
+/// executor before each tool call.
 pub struct ToolContext {
     /// Current working directory.
     pub cwd: PathBuf,
@@ -187,6 +191,9 @@ pub struct ToolContext {
 }
 
 /// Result of a tool execution.
+///
+/// Contains the output text and whether it represents an error.
+/// Injected into the conversation as a `ToolResult` content block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     /// The main output content.

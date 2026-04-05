@@ -33,19 +33,33 @@ use tracing::debug;
 const MAX_INDEX_LINES: usize = 200;
 const MAX_MEMORY_FILE_BYTES: usize = 25_000;
 
+/// Persistent context loaded at session start.
+///
+/// Contains project-level context (`AGENTS.md`), user-level memory
+/// (`~/.config/agent-code/memory/`), and individual memory files.
+/// Injected into the system prompt so the agent has context across sessions.
 #[derive(Debug, Clone, Default)]
 pub struct MemoryContext {
+    /// Project-level instructions from `AGENTS.md` in the repo root.
     pub project_context: Option<String>,
+    /// User-level memory index from `MEMORY.md`.
     pub user_memory: Option<String>,
+    /// Individual memory files linked from the index.
     pub memory_files: Vec<MemoryFile>,
+    /// Paths already surfaced in this session (to avoid duplicates).
     pub surfaced: HashSet<PathBuf>,
 }
 
+/// A single memory file with metadata.
 #[derive(Debug, Clone)]
 pub struct MemoryFile {
+    /// Absolute path to the memory file.
     pub path: PathBuf,
+    /// Memory name from frontmatter.
     pub name: String,
+    /// File content (truncated at 25KB).
     pub content: String,
+    /// Optional staleness indicator.
     pub staleness: Option<String>,
 }
 
@@ -272,10 +286,12 @@ fn user_memory_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("agent-code").join("memory"))
 }
 
+/// Returns the project-level memory directory (`.agent/` in the project root).
 pub fn project_memory_dir(project_root: &Path) -> PathBuf {
     project_root.join(".agent")
 }
 
+/// Returns the user-level memory directory, creating it if needed.
 pub fn ensure_memory_dir() -> Option<PathBuf> {
     let dir = user_memory_dir()?;
     let _ = std::fs::create_dir_all(&dir);

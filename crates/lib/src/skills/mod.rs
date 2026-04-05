@@ -16,6 +16,10 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
 /// A loaded skill definition.
+///
+/// Skills are markdown files with YAML frontmatter. The body is a
+/// prompt template supporting `{{arg}}` substitution. Invoke via
+/// `/skill-name` in the REPL or programmatically via the Skill tool.
 #[derive(Debug, Clone)]
 pub struct Skill {
     /// Skill name (derived from filename without extension).
@@ -103,7 +107,11 @@ fn is_shell_fence(line: &str) -> bool {
         || trimmed.starts_with("```zsh")
 }
 
-/// Skill registry holding all loaded skills.
+/// Registry of loaded skills from bundled, project, and user directories.
+///
+/// Load with [`SkillRegistry::load_all`]. Skills are searched in order:
+/// project (`.agent/skills/`), user (`~/.config/agent-code/skills/`),
+/// then bundled. A project skill with the same name overrides a bundled one.
 pub struct SkillRegistry {
     skills: Vec<Skill>,
 }

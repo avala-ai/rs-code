@@ -12,7 +12,10 @@ use uuid::Uuid;
 
 use crate::llm::message::Message;
 
-/// Serializable session state.
+/// Serializable session state persisted to disk.
+///
+/// Auto-saved on exit, restored via `/resume <id>`. Stored as JSON
+/// in `~/.config/agent-code/sessions/`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SessionData {
     /// Unique session identifier.

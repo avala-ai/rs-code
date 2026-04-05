@@ -42,6 +42,10 @@ pub struct QueryEngineConfig {
 }
 
 /// The query engine orchestrates the agent loop.
+///
+/// Central coordinator that drives the LLM → tools → LLM cycle.
+/// Manages conversation history, context compaction, tool execution,
+/// error recovery, and hook dispatch. Create via [`QueryEngine::new`].
 pub struct QueryEngine {
     llm: Arc<dyn Provider>,
     tools: ToolRegistry,
