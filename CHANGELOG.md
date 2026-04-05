@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-*No changes yet.*
+### Added
+
+- **Plugin executable support**: plugins can ship executables in `bin/` that are registered as callable tools
+- **Self-update check**: background check on startup + `/update` command, throttled to 24h
+- **Rustdoc**: top-level library documentation with module table, examples, and custom Tool guide
+- **4 tutorials**: first project, custom skills, MCP integration, multi-provider setup
+- **4 architecture deep-dives**: context compaction, tool execution, provider abstraction, MCP protocol
+- **Performance tuning guide**: model selection, context management, cost control, benchmarking
+- **Security documentation**: expanded SECURITY.md + new docs page with enterprise config
+- **FAQ page**: 18 questions across 6 categories
+- **Criterion benchmarks**: compaction and token estimation performance suites
+- **Coverage reporting**: cargo-tarpaulin + Codecov in CI with README badge
 
 ## [0.10.0] - 2026-04-05
 
