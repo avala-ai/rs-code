@@ -34,6 +34,7 @@ pub mod mcp_resources;
 pub mod multi_edit;
 pub mod notebook_edit;
 pub mod plan_mode;
+pub mod plugin_exec;
 pub mod powershell;
 pub mod registry;
 pub mod repl_tool;

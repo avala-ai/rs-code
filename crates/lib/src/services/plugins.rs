@@ -140,6 +140,16 @@ impl PluginRegistry {
             .flat_map(|p| &p.manifest.hooks)
             .collect()
     }
+
+    /// Discover all executable tools from plugin bin/ directories.
+    pub fn executable_tools(&self) -> Vec<crate::tools::plugin_exec::PluginExecTool> {
+        self.plugins
+            .iter()
+            .flat_map(|p| {
+                crate::tools::plugin_exec::discover_plugin_executables(&p.path, &p.manifest.name)
+            })
+            .collect()
+    }
 }
 
 fn load_plugin(path: &Path) -> Result<Plugin, String> {
