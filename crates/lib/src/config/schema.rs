@@ -2,7 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Top-level configuration.
+/// Top-level configuration for the agent.
+///
+/// Loaded from three layers (highest priority first):
+/// 1. CLI flags and environment variables
+/// 2. Project config (`.agent/settings.toml`)
+/// 3. User config (`~/.config/agent-code/config.toml`)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 #[derive(Default)]
@@ -64,6 +69,10 @@ pub struct McpServerEntry {
 }
 
 /// API connection settings.
+///
+/// Configures the LLM provider: base URL, model, API key, timeouts,
+/// cost limits, and thinking mode. The API key is resolved from
+/// multiple sources (env vars, config file, CLI flag).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ApiConfig {
@@ -179,7 +188,9 @@ impl Default for PermissionsConfig {
     }
 }
 
-/// Permission mode.
+/// Permission mode controlling how tool calls are authorized.
+///
+/// Set globally via `[permissions] default_mode` or per-tool via rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionMode {

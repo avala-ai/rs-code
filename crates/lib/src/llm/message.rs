@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// A message in the conversation.
+///
+/// Conversations alternate between `User` and `Assistant` messages.
+/// `System` messages are internal notifications not sent to the LLM API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Message {
@@ -101,6 +104,10 @@ pub enum MessageLevel {
 }
 
 /// A block of content within a message.
+///
+/// Messages contain one or more blocks. `Text` is the primary content.
+/// `ToolUse` and `ToolResult` enable the tool-call loop. `Thinking`
+/// captures extended reasoning (when the model supports it).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
@@ -189,7 +196,11 @@ impl ContentBlock {
     }
 }
 
-/// Token usage information.
+/// Token usage from an API response.
+///
+/// Tracks input, output, and cache tokens per turn. Accumulated in
+/// [`AppState`](crate::state::AppState) for session cost tracking.
+/// Cache tokens indicate prompt caching effectiveness.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: u64,
