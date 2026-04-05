@@ -7,6 +7,7 @@
 // Many types exist for the public API surface but aren't used internally yet.
 #![allow(dead_code)]
 
+mod acp;
 mod attach;
 mod commands;
 mod serve;
@@ -97,6 +98,11 @@ struct Cli {
     /// or connects to the specified port.
     #[arg(long)]
     attach: bool,
+
+    /// Start ACP (Agent Client Protocol) stdio server for IDE integrations.
+    /// IDEs spawn `agent acp` and communicate via stdin/stdout JSON-RPC 2.0.
+    #[arg(long)]
+    acp: bool,
 }
 
 fn run_setup_wizard() {
@@ -131,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Run setup wizard on first launch (no config file). Skip for non-interactive modes.
-    if cli.prompt.is_none() && !cli.dump_system_prompt && !cli.serve && ui::setup::needs_setup() {
+    if cli.prompt.is_none() && !cli.dump_system_prompt && !cli.serve && !cli.acp && ui::setup::needs_setup() {
         run_setup_wizard();
     }
 
@@ -177,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
     // If nothing found and interactive, run the setup wizard.
     let has_key = cli.api_key.is_some() || config.api.api_key.is_some();
 
-    if !has_key && cli.prompt.is_none() && !cli.dump_system_prompt && !cli.serve {
+    if !has_key && cli.prompt.is_none() && !cli.dump_system_prompt && !cli.serve && !cli.acp {
         eprintln!("No API key found. Starting setup...\n");
         run_setup_wizard();
         config = Config::load()?;
@@ -250,6 +256,7 @@ async fn main() -> anyhow::Result<()> {
         && cli.prompt.is_none()
         && !cli.dump_system_prompt
         && !cli.serve
+        && !cli.acp
     {
         let check_url = format!("{}/models", config.api.base_url);
         let key_invalid = std::process::Command::new("curl")
@@ -405,6 +412,11 @@ async fn main() -> anyhow::Result<()> {
     // Serve mode: start HTTP API server.
     if cli.serve {
         return serve::run_server(engine, cli.port).await;
+    }
+
+    // ACP mode: start stdio JSON-RPC server for IDE integrations.
+    if cli.acp {
+        return acp::run_acp(engine).await;
     }
 
     // One-shot or interactive mode.
