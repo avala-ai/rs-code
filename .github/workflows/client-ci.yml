@@ -1,0 +1,65 @@
+name: Client CI
+
+on:
+  pull_request:
+    paths:
+      - 'client/**'
+      - 'packages/agent_code_client/**'
+  push:
+    branches: [main]
+    paths:
+      - 'client/**'
+      - 'packages/agent_code_client/**'
+
+jobs:
+  test:
+    name: Dart tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+
+      - name: Get dependencies (shared package)
+        working-directory: packages/agent_code_client
+        run: dart pub get
+
+      - name: Analyze (shared package)
+        working-directory: packages/agent_code_client
+        run: dart analyze --no-fatal-warnings
+
+      - name: Run tests (shared package)
+        working-directory: packages/agent_code_client
+        run: dart test --exclude-tags e2e
+
+  build-check:
+    name: Flutter build check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Generate macOS runner (if not committed)
+        working-directory: client
+        run: |
+          if [ ! -d macos ]; then
+            flutter create --platforms=macos --project-name=agent_code_client_app .
+          fi
+
+      - name: Get dependencies
+        working-directory: client
+        run: flutter pub get
+
+      - name: Analyze
+        working-directory: client
+        run: flutter analyze --no-fatal-infos || true
+
+      - name: Build macOS (release)
+        working-directory: client
+        run: flutter build macos --release
