@@ -46,7 +46,7 @@ fn shell_message_does_not_break_alternation() {
 
     // A sequence: user → assistant → shell_meta → user should be valid
     // because meta messages don't count as "user" for alternation.
-    let messages = vec![
+    let messages = [
         user_message("first question"),
         Message::Assistant(AssistantMessage {
             uuid: uuid::Uuid::new_v4(),

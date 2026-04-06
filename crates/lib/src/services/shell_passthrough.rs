@@ -164,7 +164,7 @@ mod tests {
         // Should have captured some lines but not all 60.
         let captured_lines: Vec<&str> = buffer.lines().collect();
         assert!(captured_lines.len() < 60);
-        assert!(captured_lines.len() > 0);
+        assert!(!captured_lines.is_empty());
     }
 
     #[test]
