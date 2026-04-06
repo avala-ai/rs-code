@@ -24,9 +24,9 @@ void main() {
   final canRun = apiKey != null && apiKey.isNotEmpty && agentBinary != null;
 
   group('Agent E2E', () {
-    late Process agentProcess;
-    late AgentInstance instance;
-    late WsClient ws;
+    Process? agentProcess;
+    AgentInstance? instance;
+    WsClient? ws;
 
     setUp(() async {
       if (!canRun) return;
@@ -47,21 +47,22 @@ void main() {
       );
 
       // Wait for lockfile.
-      instance = await _waitForLockfile(agentProcess.pid);
+      instance = await _waitForLockfile(agentProcess!.pid);
 
       // Connect WebSocket.
       ws = WsClient();
-      await ws.connect(instance.port, instance.token);
+      await ws.connect(instance!.port, instance!.token);
     });
 
     tearDown(() async {
       if (!canRun) return;
-      await ws.dispose();
-      agentProcess.kill();
-      await agentProcess.exitCode;
-      // Clean up lockfile.
-      final lockfile = _lockfilePath(agentProcess.pid);
-      if (File(lockfile).existsSync()) File(lockfile).deleteSync();
+      await ws?.dispose();
+      if (agentProcess != null) {
+        agentProcess!.kill();
+        await agentProcess!.exitCode;
+        final lockfile = _lockfilePath(agentProcess!.pid);
+        if (File(lockfile).existsSync()) File(lockfile).deleteSync();
+      }
     });
 
     test(
@@ -75,7 +76,7 @@ void main() {
         final client = http.Client();
         try {
           final resp = await client.get(
-            Uri.parse('http://127.0.0.1:${instance.port}/health'),
+            Uri.parse('http://127.0.0.1:${instance!.port}/health'),
           );
           expect(resp.statusCode, 200);
           expect(resp.body, 'ok');
@@ -94,7 +95,7 @@ void main() {
           return;
         }
 
-        final status = await ws.getStatus();
+        final status = await ws!.getStatus();
         expect(status.sessionId, isNotEmpty);
         expect(status.version, isNotEmpty);
         expect(status.turnCount, 0);
@@ -115,7 +116,7 @@ void main() {
         final events = <JsonRpcNotification>[];
         final doneFuture = Completer<void>();
 
-        final sub = ws.notifications.listen((event) {
+        final sub = ws!.notifications.listen((event) {
           events.add(event);
           if (event.method == 'events/done') {
             doneFuture.complete();
@@ -123,7 +124,7 @@ void main() {
         });
 
         // Send a simple prompt that doesn't require tools.
-        final response = await ws.sendMessage('Say exactly: hello world');
+        final response = await ws!.sendMessage('Say exactly: hello world');
 
         // Wait for the done event (or timeout).
         await doneFuture.future.timeout(
@@ -164,7 +165,7 @@ void main() {
         final events = <JsonRpcNotification>[];
         final doneFuture = Completer<void>();
 
-        final sub = ws.notifications.listen((event) {
+        final sub = ws!.notifications.listen((event) {
           events.add(event);
           if (event.method == 'events/done') {
             if (!doneFuture.isCompleted) doneFuture.complete();
@@ -172,7 +173,7 @@ void main() {
         });
 
         // Ask something that will use the Bash tool.
-        final response = await ws.sendMessage('What is the current date? Use the bash tool to run "date".');
+        final response = await ws!.sendMessage('What is the current date? Use the bash tool to run "date".');
 
         await doneFuture.future.timeout(
           const Duration(seconds: 45),
@@ -207,10 +208,10 @@ void main() {
         }
 
         // Turn 1: establish a fact.
-        await ws.sendMessage('Remember: the secret code is ALPHA-7.');
+        await ws!.sendMessage('Remember: the secret code is ALPHA-7.');
 
         // Turn 2: ask about it.
-        final response = await ws.sendMessage('What is the secret code I told you?');
+        final response = await ws!.sendMessage('What is the secret code I told you?');
 
         expect(response.result, isNotNull);
         final text = response.result!['response'] as String;
@@ -228,9 +229,9 @@ void main() {
           return;
         }
 
-        await ws.sendMessage('Say hi.');
+        await ws!.sendMessage('Say hi.');
 
-        final status = await ws.getStatus();
+        final status = await ws!.getStatus();
         expect(status.turnCount, 1);
         expect(status.costUsd, greaterThan(0));
         expect(status.messageCount, greaterThan(0));
