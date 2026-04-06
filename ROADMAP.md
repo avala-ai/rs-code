@@ -178,6 +178,57 @@ All commands are added to `crates/cli/src/commands/mod.rs`.
 - [ ] Interactive setup wizard for Bedrock (AWS credential chain, region, model selection)
 - [ ] Provider health check in `/doctor` output
 
+### 4.3 Model Routing and Automatic Fallback
+
+Automatically detect model unavailability and route to alternatives without user intervention.
+
+**Availability State Machine:**
+
+Each model tracks health via a 3-state machine:
+- `healthy` — model is available, use normally
+- `sticky_retry` — transient error occurred; allow one retry per turn, then skip
+- `terminal` — permanent unavailability (quota exhausted, model deprecated, capacity limit)
+
+State transitions:
+```text
+healthy ──[transient error]──▶ sticky_retry ──[consumed]──▶ skip this turn
+healthy ──[permanent error]──▶ terminal ──[never recovers within session]
+sticky_retry ──[turn boundary]──▶ healthy (reset for next turn)
+```
+
+**Composite Routing Strategy:**
+
+Evaluate strategies in priority order; first match wins:
+1. **FallbackStrategy** — check availability state; if unhealthy, select next model in chain
+2. **OverrideStrategy** — honor user `/model` override regardless of routing
+3. **CostStrategy** — route to cheaper model when task is simple (e.g., file listing vs. architecture refactor)
+4. **DefaultStrategy** — use configured model
+
+**Fallback Chain Configuration:**
+
+```toml
+[routing]
+fallback_chain = ["primary-model", "secondary-model", "tertiary-model"]
+cost_threshold_usd = 0.50  # Switch to cheaper model after this session cost
+
+[routing.availability]
+retry_on_transient = true
+terminal_on_quota = true
+```
+
+**Cross-feature interaction:** Model switches invalidate prompt cache (see 7.13). Every provider's cache is model-specific. The routing service should notify the cache strategy when a fallback triggers, so the cache layer can log the cost impact and pre-warm the new model's cache.
+
+**Implementation Tasks:**
+- [ ] Add `ModelAvailabilityService` to `crates/lib/src/services/` with health state tracking per model
+- [ ] Add `ModelRouterService` to `crates/lib/src/services/` with ordered strategy evaluation
+- [ ] Add `fallback_chain` and `routing` sections to `ConfigSchema`
+- [ ] Wire router into `query/mod.rs` loop — on LLM error, consult router before retrying
+- [ ] Add `resetTurn()` call at turn boundary to clear sticky consumption flags
+- [ ] Log routing decisions with reason (e.g., "Model X unavailable (quota). Falling back to Y")
+- [ ] Notify cache strategy on model switch (see 7.13) to track cache invalidation cost
+- [ ] Add `/routing` slash command showing current model health states
+- [ ] Tests: unit tests for state machine transitions, integration tests for chain traversal
+
 ---
 
 ## Phase 5: Testing and Quality
@@ -394,6 +445,10 @@ FileRead = { sandbox = false } # Skip sandbox for reads (performance)
 - [ ] Add `--no-sandbox` CLI flag to disable (requires `disable_bypass_permissions = false`)
 - [ ] Tests: unit tests for policy parsing, integration tests for each platform strategy
 - [ ] Benchmark: measure sandbox overhead per tool call (target: <10ms)
+
+**Future: gVisor (runsc) for Linux**
+
+bubblewrap provides namespace isolation (process, mount, network) but does NOT filter syscalls. A compromised process inside bwrap can still make arbitrary syscalls. gVisor intercepts all syscalls in userspace via its Go-based kernel, providing the strongest isolation available on Linux. Deferred because it requires Docker runtime (`--runtime=runsc`), adding a heavy dependency. Ship bwrap first, add gVisor as an optional upgrade for high-security environments.
 
 ### 7.5 Behavioral Evaluation Framework
 
@@ -888,11 +943,11 @@ Automated PR-to-issue linking and label synchronization:
 - [ ] Create documentation in `docs/tutorials/github-action.mdx`
 - [ ] Tests: Action integration tests using `act` (local GitHub Actions runner)
 
-### 7.11 OAuth and Free-Tier Authentication
+### 7.11 OAuth Authentication
 
 **Priority: Medium** | **Target: v1.2**
 
-API key management is the #1 friction point for new users. Adding OAuth-based authentication with a managed free tier removes this barrier entirely.
+API key management is friction for new users. Adding OAuth-based authentication with OS keychain storage simplifies onboarding for users who already have provider accounts.
 
 **Authentication Flow:**
 
@@ -936,16 +991,6 @@ Never store tokens in plaintext config files.
 - Access tokens: 1-hour TTL, auto-refresh on 401 response
 - Refresh tokens: stored in keychain alongside access token
 - If refresh fails: prompt re-authentication via browser
-
-**Free Tier Limits:**
-
-```toml
-[free_tier]
-requests_per_minute = 30
-requests_per_day = 500
-context_window = 200_000  # tokens
-models = ["fast-model"]   # Subset of available models
-```
 
 **Implementation Tasks:**
 - [ ] Add `crates/lib/src/auth/` module with `AuthProvider` trait
@@ -1082,6 +1127,7 @@ Turn 3: 45,231 tokens (38,000 cached, 7,231 new) — $0.002 (90% savings)
 - System prompt cache: invalidated only on tool definition change or memory write
 - File content cache: keyed by SHA256 hash of content — auto-invalidates on file modification
 - Conversation cache: sliding window — old turns fall off naturally
+- **Model switch (see 4.3):** all provider caches are model-specific. When routing falls back to a different model, the cache is cold. Log the cost impact so users understand the token spike.
 
 **Implementation Tasks:**
 - [ ] Add `CacheStrategy` to `llm/client.rs` — tag system prompt, tools, memory with cache control headers
@@ -1269,7 +1315,7 @@ Beyond dependencies, scan generated code for common vulnerability patterns:
 
 ### 7.17 Hierarchical Context Resolution
 
-**Priority: Medium** | **Target: v1.1**
+**Priority: Medium** | **Target: v1.2**
 
 Currently, project context is loaded from a single root-level file. For monorepos and deep directory structures, context should be merged hierarchically based on the agent's current working focus.
 
@@ -1306,7 +1352,7 @@ The agent determines working focus from:
 
 ### 7.18 Shell Passthrough Context Injection
 
-**Priority: Medium** | **Target: v1.1**
+**Priority: Medium** | **Target: v1.2**
 
 The `!` prefix already exists in the REPL (`crates/cli/src/ui/repl.rs:603`) and runs shell commands directly. However, the current implementation has two limitations:
 
@@ -1397,7 +1443,7 @@ Priority areas where contributions are most welcome:
 
 ### Medium Priority (v1.2)
 8. **GitHub Action** (7.10) — First-party action for PR review and issue triage
-9. **OAuth authentication** (7.11) — Browser-based auth with OS keychain storage
+9. **OAuth authentication** (7.11) — Browser-based auth with OS keychain
 10. **Local LLM auto-discovery** (7.14) — Zero-config detection of Ollama, LM Studio
 11. **Remote agent protocol** (7.8) — JSON-RPC 2.0 with Agent Card discovery
 12. **Conversation branching** (7.15) — Fork, rewind, and merge conversation states
