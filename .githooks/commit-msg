@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Reject commit messages that mention competitor brands.
+# "OpenAI" is allowed because it's also a provider name in this codebase.
+
+BLOCKLIST='(?i)\b(Claude|Anthropic|Cursor|Copilot|Windsurf|Cody|Aider|Continue\.dev|Cline|Devin|Tabnine|Sourcegraph)\b'
+
+if grep -qPi "$BLOCKLIST" "$1"; then
+  echo "ERROR: Commit message references competitor branding."
+  echo ""
+  echo "  This project must not mention competitor product or company names"
+  echo "  in commit messages. Reword and try again."
+  echo ""
+  echo "  Blocked patterns: Claude, Anthropic, Cursor, Copilot, Windsurf,"
+  echo "  Cody, Aider, Continue.dev, Cline, Devin, Tabnine, Sourcegraph"
+  echo ""
+  exit 1
+fi

@@ -38,6 +38,21 @@ cargo fmt --all
 - CI must pass (check, test, format) before merge
 - Stale review dismissal is enabled — push new commits to re-trigger review
 
+## Commit Messages
+
+**Never reference competitor brands** in commit messages. This includes product names
+(Claude, Cursor, Copilot, Windsurf, Cody, Aider, Cline, Devin, Tabnine) and company
+names (Anthropic, Sourcegraph). "OpenAI" is allowed when referring to the provider
+integration.
+
+A local git hook enforces this — activate it with:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+CI also checks PR commit messages and will fail if a blocked term is found.
+
 ## Code Style
 
 - Run `cargo fmt` before committing

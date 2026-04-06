@@ -11,6 +11,25 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  commit-messages:
+    name: Commit Messages
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Check for competitor branding
+        run: |
+          BLOCKLIST='(?i)\b(Claude|Anthropic|Cursor|Copilot|Windsurf|Cody|Aider|Continue\.dev|Cline|Devin|Tabnine|Sourcegraph)\b'
+          COMMITS=$(git log --format='%h %s' origin/${{ github.base_ref }}..HEAD)
+          if echo "$COMMITS" | grep -Pi "$BLOCKLIST"; then
+            echo ""
+            echo "ERROR: Commit message(s) above reference competitor branding."
+            echo "Reword them before merging. See CONTRIBUTING.md for details."
+            exit 1
+          fi
+
   check:
     name: Check
     runs-on: ubuntu-latest
