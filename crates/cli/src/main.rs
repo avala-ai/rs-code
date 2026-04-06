@@ -218,7 +218,26 @@ async fn main() -> anyhow::Result<()> {
             ScheduleAction::Disable { name } => {
                 return handle_schedule_toggle(name, false);
             }
-            // Add, Run, Daemon need the LLM — handled after provider setup.
+            ScheduleAction::Add {
+                cron,
+                prompt,
+                name,
+                model,
+                max_cost,
+                max_turns,
+                webhook,
+            } => {
+                return handle_schedule_add(
+                    name,
+                    cron,
+                    prompt,
+                    model.as_deref(),
+                    *max_cost,
+                    *max_turns,
+                    *webhook,
+                );
+            }
+            // Run and Daemon need the LLM — handled after provider setup.
             _ => {}
         }
     }
@@ -233,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
         && !cli.dump_system_prompt
         && !cli.serve
         && !cli.acp
+        && cli.command.is_none()
         && ui::setup::needs_setup()
     {
         run_setup_wizard();
@@ -490,37 +510,14 @@ async fn main() -> anyhow::Result<()> {
     engine.install_signal_handler();
 
     // Handle schedule/daemon subcommands that need the LLM.
-    match &cli.command {
-        Some(SubCommand::Schedule { action }) => match action {
-            ScheduleAction::Add {
-                cron,
-                prompt,
-                name,
-                model,
-                max_cost,
-                max_turns,
-                webhook,
-            } => {
-                return handle_schedule_add(
-                    name,
-                    cron,
-                    prompt,
-                    model.as_deref(),
-                    *max_cost,
-                    *max_turns,
-                    *webhook,
-                );
-            }
-            ScheduleAction::Run { name } => {
-                return handle_schedule_run(name, &llm_for_schedule, &config).await;
-            }
-            // List, Remove, Enable, Disable handled above (no LLM needed).
-            _ => {}
-        },
-        Some(SubCommand::Daemon { webhook_port }) => {
-            return daemon::run_daemon(llm_for_schedule, config, *webhook_port).await;
-        }
-        None => {}
+    if let Some(SubCommand::Schedule {
+        action: ScheduleAction::Run { name },
+    }) = &cli.command
+    {
+        return handle_schedule_run(name, &llm_for_schedule, &config).await;
+    }
+    if let Some(SubCommand::Daemon { webhook_port }) = &cli.command {
+        return daemon::run_daemon(llm_for_schedule, config, *webhook_port).await;
     }
 
     // Serve mode: start HTTP API server.
