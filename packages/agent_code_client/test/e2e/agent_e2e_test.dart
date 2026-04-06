@@ -1,6 +1,5 @@
 @Tags(['e2e'])
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:agent_code_client/models/agent_instance.dart';
@@ -37,10 +36,10 @@ void main() {
 
       // Spawn the agent with OpenRouter.
       agentProcess = await Process.start(
-        agentBinary!,
+        agentBinary ?? '',
         ['serve', '--port', '0', '-C', workDir.path],
         environment: {
-          'OPENROUTER_API_KEY': apiKey!,
+          'OPENROUTER_API_KEY': apiKey ?? '',
           'AGENT_CODE_PROVIDER': 'openrouter',
           'AGENT_CODE_MODEL': 'meta-llama/llama-3.3-70b-instruct',
           ...Platform.environment,

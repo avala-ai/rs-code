@@ -40,8 +40,8 @@ use axum::http::StatusCode;
 use axum::response::Json;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
-use futures::stream::StreamExt;
 use futures::SinkExt;
+use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as TokioMutex;
 use tokio_stream::wrappers::BroadcastStream;
@@ -302,8 +302,7 @@ pub async fn run_server(engine: QueryEngine, port: u16) -> anyhow::Result<()> {
     let actual_port = listener.local_addr()?.port();
 
     // Write lock file with actual port and auth token.
-    let lock_file =
-        agent_code_lib::services::bridge::write_lock_file(actual_port, &cwd).ok();
+    let lock_file = agent_code_lib::services::bridge::write_lock_file(actual_port, &cwd).ok();
 
     eprintln!("agent-code server listening on http://127.0.0.1:{actual_port}");
     eprintln!("POST /message    — send a prompt");
@@ -590,10 +589,12 @@ async fn handle_ws_connection(mut socket: WebSocket, state: Arc<ServerState>) {
             // JSON-RPC Request from the client (message, status, cancel).
             let id = json["id"].clone();
             let method = json["method"].as_str().unwrap_or("").to_string();
-            let params = json.get("params").cloned().unwrap_or(serde_json::Value::Null);
+            let params = json
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
 
-            let result =
-                handle_ws_request(&state, &method, &params, Arc::clone(&out_tx)).await;
+            let result = handle_ws_request(&state, &method, &params, Arc::clone(&out_tx)).await;
 
             let response = serde_json::json!({
                 "jsonrpc": "2.0",

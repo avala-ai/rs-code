@@ -7,12 +7,10 @@ void main() {
   group('ConfigService', () {
     late ConfigService config;
     late Directory tempDir;
-    late String originalHome;
 
     setUp(() {
       config = ConfigService();
       tempDir = Directory.systemTemp.createTempSync('config_test_');
-      originalHome = Platform.environment['HOME'] ?? '';
     });
 
     tearDown(() {
