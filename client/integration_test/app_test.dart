@@ -76,9 +76,11 @@ void main() {
       final button = find.widgetWithText(TextButton, '+ New');
       expect(button, findsOneWidget);
 
-      // Should not throw on tap.
+      // Tap and pump a fixed duration — the async BLoC handler may not
+      // settle cleanly in integration test mode, so avoid pumpAndSettle
+      // which can time out on pending futures.
       await tester.tap(button);
-      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 2));
     });
 
     testWidgets('shows error on web (no process spawning)', (tester) async {
@@ -86,7 +88,8 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.tap(find.text('+ New'));
-      await tester.pumpAndSettle();
+      // Pump with duration to let the BLoC process the event and emit error.
+      await tester.pump(const Duration(seconds: 2));
 
       // On web, agentManager is null — should show error.
       expect(find.textContaining('Cannot spawn'), findsOneWidget);
@@ -97,7 +100,7 @@ void main() {
       await tester.pumpAndSettle();
 
       await tester.tap(find.text('+ New'));
-      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 2));
 
       // Error text should be styled with error color.
       final errorFinder = find.textContaining('Cannot spawn');
