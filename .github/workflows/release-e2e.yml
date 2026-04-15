@@ -6,6 +6,23 @@ on:
   pull_request:
     types: [labeled]
   workflow_dispatch:
+    inputs:
+      model:
+        description: "LLM model to run the e2e suite against (OpenRouter slug)"
+        required: true
+        type: choice
+        default: openai/gpt-5-mini
+        options:
+          # Reliable tool-use models, ordered cheapest → most expensive.
+          - openai/gpt-5-nano              # cheapest, flaky on tool-use (known D10 issue)
+          - openai/gpt-5-mini              # recommended default: reliable + cheap
+          - openai/gpt-5                   # full gpt-5, higher cost
+          - anthropic/claude-haiku-4.5     # reliable tool-use, cheap
+          - anthropic/claude-sonnet-4.5    # strong tool-use, mid cost
+          - anthropic/claude-opus-4.6      # strongest tool-use, highest cost
+          - x-ai/grok-4                    # xAI flagship, tool-use capable
+          - google/gemini-2.5-flash        # fast, good tool-use
+          - deepseek/deepseek-v3.1         # open-weight alternative
 
 permissions:
   contents: read
@@ -38,4 +55,6 @@ jobs:
           AGENT_BINARY: target/release/agent
           AGENT_CODE_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           AGENT_CODE_API_BASE_URL: https://openrouter.ai/api/v1
-          AGENT_CODE_MODEL: openai/gpt-5-nano
+          # workflow_dispatch: use the user-selected model.
+          # tag push / PR label: default to gpt-5-mini (reliable + cheap).
+          AGENT_CODE_MODEL: ${{ inputs.model || 'openai/gpt-5-mini' }}
