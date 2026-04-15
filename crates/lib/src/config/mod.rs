@@ -32,25 +32,28 @@ impl Config {
     }
 
     fn load_inner() -> Result<Config, ConfigError> {
-        let mut config = Config::default();
+        let mut layers: Vec<String> = Vec::new();
 
         // Layer 1: User-level config (lowest priority file).
         if let Some(path) = user_config_path()
             && path.exists()
         {
-            let content = std::fs::read_to_string(&path)
-                .map_err(|e| ConfigError::FileError(format!("{path:?}: {e}")))?;
-            let user_config: Config = toml::from_str(&content)?;
-            config.merge(user_config);
+            layers.push(
+                std::fs::read_to_string(&path)
+                    .map_err(|e| ConfigError::FileError(format!("{path:?}: {e}")))?,
+            );
         }
 
         // Layer 2: Project-level config (overrides user config).
         if let Some(path) = find_project_config() {
-            let content = std::fs::read_to_string(&path)
-                .map_err(|e| ConfigError::FileError(format!("{path:?}: {e}")))?;
-            let project_config: Config = toml::from_str(&content)?;
-            config.merge(project_config);
+            layers.push(
+                std::fs::read_to_string(&path)
+                    .map_err(|e| ConfigError::FileError(format!("{path:?}: {e}")))?,
+            );
         }
+
+        let layer_refs: Vec<&str> = layers.iter().map(String::as_str).collect();
+        let mut config = merge_layer_contents(&layer_refs)?;
 
         // Layer 3: Environment variables override file-based config.
         // API key from env always wins over config files, because users
@@ -73,32 +76,71 @@ impl Config {
 
         Ok(config)
     }
+}
 
-    /// Merge another config into this one. Non-default values from `other`
-    /// overwrite values in `self`.
-    fn merge(&mut self, other: Config) {
-        if !other.api.base_url.is_empty() {
-            self.api.base_url = other.api.base_url;
+/// Merge a sequence of TOML config layers (lowest → highest priority) into a
+/// typed `Config`. Layers are merged at the raw `toml::Value` level *before*
+/// typed deserialization so that `#[serde(default)]` cannot synthesize
+/// placeholder sections that clobber real values from lower layers
+/// (see issue #101). The final `try_into` runs exactly once, so defaults
+/// only fill fields nobody set in any layer.
+///
+/// `permissions.rules` has extend-semantics (layers concatenate rather than
+/// replace), implemented by pulling each layer's rules aside and splicing
+/// them back after the recursive merge.
+pub(crate) fn merge_layer_contents(layers: &[&str]) -> Result<Config, ConfigError> {
+    let mut merged = toml::Value::Table(toml::value::Table::new());
+    let mut all_rules: Vec<toml::Value> = Vec::new();
+
+    for content in layers {
+        if content.is_empty() {
+            continue;
         }
-        if !other.api.model.is_empty() {
-            self.api.model = other.api.model;
+        let value: toml::Value = toml::from_str(content)?;
+        collect_permission_rules(&value, &mut all_rules);
+        merge_toml_values(&mut merged, &value);
+    }
+
+    if !all_rules.is_empty()
+        && let toml::Value::Table(root) = &mut merged
+    {
+        let perms = root
+            .entry("permissions".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+        if let toml::Value::Table(pt) = perms {
+            pt.insert("rules".to_string(), toml::Value::Array(all_rules));
         }
-        if other.api.api_key.is_some() {
-            self.api.api_key = other.api.api_key;
+    }
+
+    Ok(merged.try_into()?)
+}
+
+/// Recursively merge `overlay` into `base`. Tables merge key-by-key; any
+/// non-table value in `overlay` replaces the value in `base`. Adapted from
+/// openai/codex's `merge_toml_values`.
+fn merge_toml_values(base: &mut toml::Value, overlay: &toml::Value) {
+    if let toml::Value::Table(overlay_table) = overlay
+        && let toml::Value::Table(base_table) = base
+    {
+        for (key, value) in overlay_table {
+            if let Some(existing) = base_table.get_mut(key) {
+                merge_toml_values(existing, value);
+            } else {
+                base_table.insert(key.clone(), value.clone());
+            }
         }
-        if other.api.max_output_tokens.is_some() {
-            self.api.max_output_tokens = other.api.max_output_tokens;
-        }
-        if other.permissions.default_mode != PermissionMode::Ask {
-            self.permissions.default_mode = other.permissions.default_mode;
-        }
-        if !other.permissions.rules.is_empty() {
-            self.permissions.rules.extend(other.permissions.rules);
-        }
-        // MCP servers merge by name (project overrides user).
-        for (name, entry) in other.mcp_servers {
-            self.mcp_servers.insert(name, entry);
-        }
+    } else {
+        *base = overlay.clone();
+    }
+}
+
+fn collect_permission_rules(value: &toml::Value, out: &mut Vec<toml::Value>) {
+    if let Some(rules) = value
+        .get("permissions")
+        .and_then(|p| p.get("rules"))
+        .and_then(|r| r.as_array())
+    {
+        out.extend(rules.iter().cloned());
     }
 }
 
@@ -190,5 +232,442 @@ fn find_config_in_ancestors(start: &Path) -> Option<PathBuf> {
         if !dir.pop() {
             return None;
         }
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    fn merge_layers(user: &str, project: &str) -> Config {
+        merge_layer_contents(&[user, project]).unwrap()
+    }
+
+    // ---- Issue #101: project config without [api] must not clobber user api ----
+
+    #[test]
+    fn project_without_api_section_preserves_user_base_url_and_model() {
+        let user = r#"
+[api]
+base_url = "http://localhost:11434/v1"
+model = "gemma4:26b"
+"#;
+        let project = r#"
+[mcp_servers.my-server]
+command = "/usr/local/bin/my-mcp"
+args = []
+"#;
+        let cfg = merge_layers(user, project);
+        assert_eq!(cfg.api.base_url, "http://localhost:11434/v1");
+        assert_eq!(cfg.api.model, "gemma4:26b");
+        assert!(cfg.mcp_servers.contains_key("my-server"));
+    }
+
+    #[test]
+    fn project_partial_api_only_overrides_specified_fields() {
+        let user = r#"
+[api]
+base_url = "http://localhost:11434/v1"
+model = "gemma4:26b"
+"#;
+        let project = r#"
+[api]
+model = "llama3:70b"
+"#;
+        let cfg = merge_layers(user, project);
+        // Project overrides model.
+        assert_eq!(cfg.api.model, "llama3:70b");
+        // base_url is inherited from user, not clobbered by default.
+        assert_eq!(cfg.api.base_url, "http://localhost:11434/v1");
+    }
+
+    #[test]
+    fn project_without_ui_section_preserves_user_theme() {
+        let user = r#"
+[ui]
+theme = "solarized"
+edit_mode = "vi"
+"#;
+        let project = r#"
+[mcp_servers.foo]
+command = "x"
+"#;
+        let cfg = merge_layers(user, project);
+        assert_eq!(cfg.ui.theme, "solarized");
+        assert_eq!(cfg.ui.edit_mode, "vi");
+    }
+
+    #[test]
+    fn project_without_features_preserves_user_feature_flags() {
+        let user = r#"
+[features]
+token_budget = false
+prompt_caching = false
+"#;
+        let project = "";
+        let cfg = merge_layers(user, project);
+        assert!(!cfg.features.token_budget);
+        assert!(!cfg.features.prompt_caching);
+        // Unspecified flags fall back to their struct default (true).
+        assert!(cfg.features.commit_attribution);
+    }
+
+    #[test]
+    fn permission_rules_extend_across_layers() {
+        let user = r#"
+[[permissions.rules]]
+tool = "Read"
+action = "allow"
+
+[[permissions.rules]]
+tool = "Bash"
+pattern = "rm -rf *"
+action = "deny"
+"#;
+        let project = r#"
+[[permissions.rules]]
+tool = "Write"
+action = "ask"
+"#;
+        let cfg = merge_layers(user, project);
+        assert_eq!(cfg.permissions.rules.len(), 3);
+        assert_eq!(cfg.permissions.rules[0].tool, "Read");
+        assert_eq!(cfg.permissions.rules[1].tool, "Bash");
+        assert_eq!(cfg.permissions.rules[2].tool, "Write");
+    }
+
+    #[test]
+    fn mcp_servers_merge_by_name_project_overrides_user() {
+        let user = r#"
+[mcp_servers.alpha]
+command = "user-alpha"
+
+[mcp_servers.beta]
+command = "user-beta"
+"#;
+        let project = r#"
+[mcp_servers.beta]
+command = "project-beta"
+
+[mcp_servers.gamma]
+command = "project-gamma"
+"#;
+        let cfg = merge_layers(user, project);
+        assert_eq!(
+            cfg.mcp_servers["alpha"].command.as_deref(),
+            Some("user-alpha")
+        );
+        assert_eq!(
+            cfg.mcp_servers["beta"].command.as_deref(),
+            Some("project-beta")
+        );
+        assert_eq!(
+            cfg.mcp_servers["gamma"].command.as_deref(),
+            Some("project-gamma")
+        );
+    }
+
+    #[test]
+    fn no_layers_yields_default_config() {
+        let cfg = merge_layers("", "");
+        assert_eq!(cfg.api.model, "gpt-5.4");
+        assert_eq!(cfg.permissions.default_mode, PermissionMode::Ask);
+    }
+
+    // ---- merge_toml_values primitive ----
+
+    #[test]
+    fn merge_toml_values_recursive_table_merge() {
+        let mut base: toml::Value = toml::from_str(
+            r#"
+[api]
+base_url = "http://a"
+model = "m1"
+"#,
+        )
+        .unwrap();
+        let overlay: toml::Value = toml::from_str(
+            r#"
+[api]
+model = "m2"
+"#,
+        )
+        .unwrap();
+        merge_toml_values(&mut base, &overlay);
+        let api = base.get("api").unwrap();
+        assert_eq!(api.get("base_url").unwrap().as_str(), Some("http://a"));
+        assert_eq!(api.get("model").unwrap().as_str(), Some("m2"));
+    }
+
+    #[test]
+    fn merge_toml_values_overlay_replaces_non_table() {
+        let mut base = toml::Value::String("old".into());
+        let overlay = toml::Value::String("new".into());
+        merge_toml_values(&mut base, &overlay);
+        assert_eq!(base.as_str(), Some("new"));
+    }
+}
+
+#[cfg(test)]
+mod e2e_tests {
+    //! End-to-end tests that write real TOML files to a temp directory and
+    //! drive the full file-reading + merge pipeline. These cover everything
+    //! `Config::load` does except the XDG path resolution and env overrides,
+    //! both of which would require process-global mutation to test.
+    //!
+    //! Also covers `find_config_in_ancestors` directly against a tempdir tree.
+
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Write user + project files and drive the full load pipeline the way
+    /// `load_inner` does: read each file to a String, then merge.
+    fn load_from_files(user_toml: Option<&str>, project_toml: Option<&str>) -> Config {
+        let dir = TempDir::new().unwrap();
+        let mut layers: Vec<String> = Vec::new();
+
+        if let Some(body) = user_toml {
+            let path = dir.path().join("user.toml");
+            fs::write(&path, body).unwrap();
+            layers.push(fs::read_to_string(&path).unwrap());
+        }
+        if let Some(body) = project_toml {
+            let path = dir.path().join("project.toml");
+            fs::write(&path, body).unwrap();
+            layers.push(fs::read_to_string(&path).unwrap());
+        }
+
+        let refs: Vec<&str> = layers.iter().map(String::as_str).collect();
+        merge_layer_contents(&refs).unwrap()
+    }
+
+    // ---- Issue #101 reproduction, through real files ----
+
+    #[test]
+    fn e2e_issue_101_ollama_user_preserved_when_project_has_only_mcp_servers() {
+        let user = r#"
+[api]
+base_url = "http://localhost:11434/v1"
+model = "gemma4:26b"
+api_key = "ollama"
+"#;
+        let project = r#"
+[mcp_servers.my-server]
+command = "/usr/local/bin/my-mcp"
+args = []
+"#;
+        let cfg = load_from_files(Some(user), Some(project));
+        assert_eq!(cfg.api.base_url, "http://localhost:11434/v1");
+        assert_eq!(cfg.api.model, "gemma4:26b");
+        assert_eq!(cfg.api.api_key.as_deref(), Some("ollama"));
+        assert_eq!(
+            cfg.mcp_servers["my-server"].command.as_deref(),
+            Some("/usr/local/bin/my-mcp")
+        );
+    }
+
+    #[test]
+    fn e2e_only_user_config_exists() {
+        let user = r#"
+[api]
+base_url = "http://example.com/v1"
+model = "custom"
+"#;
+        let cfg = load_from_files(Some(user), None);
+        assert_eq!(cfg.api.base_url, "http://example.com/v1");
+        assert_eq!(cfg.api.model, "custom");
+    }
+
+    #[test]
+    fn e2e_only_project_config_exists() {
+        let project = r#"
+[api]
+base_url = "http://proj.example.com/v1"
+model = "proj-model"
+"#;
+        let cfg = load_from_files(None, Some(project));
+        assert_eq!(cfg.api.base_url, "http://proj.example.com/v1");
+        assert_eq!(cfg.api.model, "proj-model");
+    }
+
+    #[test]
+    fn e2e_no_config_files_yields_defaults() {
+        let cfg = load_from_files(None, None);
+        assert_eq!(cfg.api.model, "gpt-5.4");
+        assert_eq!(cfg.permissions.default_mode, PermissionMode::Ask);
+        assert!(cfg.ui.markdown);
+    }
+
+    #[test]
+    fn e2e_project_overrides_model_keeps_user_base_url() {
+        let user = r#"
+[api]
+base_url = "http://ollama.local/v1"
+model = "gemma4:26b"
+"#;
+        let project = r#"
+[api]
+model = "llama3:70b"
+"#;
+        let cfg = load_from_files(Some(user), Some(project));
+        assert_eq!(cfg.api.base_url, "http://ollama.local/v1");
+        assert_eq!(cfg.api.model, "llama3:70b");
+    }
+
+    #[test]
+    fn e2e_project_overrides_single_ui_field_keeps_others() {
+        let user = r#"
+[ui]
+theme = "solarized"
+edit_mode = "vi"
+markdown = false
+"#;
+        let project = r#"
+[ui]
+theme = "light"
+"#;
+        let cfg = load_from_files(Some(user), Some(project));
+        assert_eq!(cfg.ui.theme, "light");
+        assert_eq!(cfg.ui.edit_mode, "vi");
+        assert!(!cfg.ui.markdown);
+    }
+
+    #[test]
+    fn e2e_permission_rules_concatenate_across_layers() {
+        let user = r#"
+[[permissions.rules]]
+tool = "Read"
+action = "allow"
+
+[[permissions.rules]]
+tool = "Bash"
+pattern = "rm -rf /"
+action = "deny"
+"#;
+        let project = r#"
+[[permissions.rules]]
+tool = "Write"
+action = "ask"
+"#;
+        let cfg = load_from_files(Some(user), Some(project));
+        assert_eq!(cfg.permissions.rules.len(), 3);
+        let tools: Vec<&str> = cfg
+            .permissions
+            .rules
+            .iter()
+            .map(|r| r.tool.as_str())
+            .collect();
+        assert_eq!(tools, vec!["Read", "Bash", "Write"]);
+    }
+
+    #[test]
+    fn e2e_mcp_servers_union_by_name() {
+        let user = r#"
+[mcp_servers.alpha]
+command = "user-alpha"
+
+[mcp_servers.beta]
+command = "user-beta"
+"#;
+        let project = r#"
+[mcp_servers.beta]
+command = "project-beta"
+
+[mcp_servers.gamma]
+command = "project-gamma"
+"#;
+        let cfg = load_from_files(Some(user), Some(project));
+        assert_eq!(cfg.mcp_servers.len(), 3);
+        assert_eq!(
+            cfg.mcp_servers["alpha"].command.as_deref(),
+            Some("user-alpha")
+        );
+        assert_eq!(
+            cfg.mcp_servers["beta"].command.as_deref(),
+            Some("project-beta")
+        );
+        assert_eq!(
+            cfg.mcp_servers["gamma"].command.as_deref(),
+            Some("project-gamma")
+        );
+    }
+
+    #[test]
+    fn e2e_feature_flags_partial_override() {
+        let user = r#"
+[features]
+token_budget = false
+prompt_caching = false
+"#;
+        let project = r#"
+[features]
+token_budget = true
+"#;
+        let cfg = load_from_files(Some(user), Some(project));
+        assert!(cfg.features.token_budget); // project flipped it
+        assert!(!cfg.features.prompt_caching); // user value preserved
+        assert!(cfg.features.commit_attribution); // struct default
+    }
+
+    #[test]
+    fn e2e_malformed_toml_is_surfaced_as_parse_error() {
+        let bad = "this is = = not valid toml\n[[[";
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bad.toml");
+        fs::write(&path, bad).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        let err = merge_layer_contents(&[&content]).unwrap_err();
+        assert!(matches!(err, ConfigError::ParseError(_)));
+    }
+
+    // ---- find_config_in_ancestors over a real directory tree ----
+
+    #[test]
+    fn e2e_find_project_config_walks_up_from_nested_dir() {
+        let root = TempDir::new().unwrap();
+        let project_root = root.path().join("myproj");
+        let nested = project_root.join("crates").join("deep").join("src");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(project_root.join(".agent")).unwrap();
+        let settings = project_root.join(".agent").join("settings.toml");
+        fs::write(&settings, "[api]\nmodel = \"from-ancestor\"\n").unwrap();
+
+        let found = find_config_in_ancestors(&nested).unwrap();
+        assert_eq!(found, settings);
+    }
+
+    #[test]
+    fn e2e_find_project_config_returns_none_when_absent() {
+        let root = TempDir::new().unwrap();
+        let nested = root.path().join("a").join("b").join("c");
+        fs::create_dir_all(&nested).unwrap();
+        // No `.agent/settings.toml` anywhere.
+        // The walk may still hit a real `.agent/settings.toml` in a parent of
+        // the tempdir root (unlikely but possible on dev machines). Guard by
+        // checking the result is either None or outside our tempdir.
+        if let Some(path) = find_config_in_ancestors(&nested) {
+            assert!(
+                !path.starts_with(root.path()),
+                "unexpected settings.toml inside tempdir: {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn e2e_find_project_config_stops_at_first_match() {
+        let root = TempDir::new().unwrap();
+        // Two levels, both with .agent/settings.toml. The inner one should win.
+        let outer = root.path().join("outer");
+        let inner = outer.join("inner");
+        fs::create_dir_all(inner.join(".agent")).unwrap();
+        fs::create_dir_all(outer.join(".agent")).unwrap();
+        let inner_settings = inner.join(".agent").join("settings.toml");
+        let outer_settings = outer.join(".agent").join("settings.toml");
+        fs::write(&inner_settings, "[api]\nmodel = \"inner\"\n").unwrap();
+        fs::write(&outer_settings, "[api]\nmodel = \"outer\"\n").unwrap();
+
+        let found = find_config_in_ancestors(&inner).unwrap();
+        assert_eq!(found, inner_settings);
     }
 }
