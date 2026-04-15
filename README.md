@@ -76,7 +76,7 @@ Plus any OpenAI-compatible endpoint: `agent --api-base-url http://localhost:8080
 
 File ops, search, shell, git, web, LSP, MCP, notebooks, tasks, and more. Tools execute during LLM streaming for faster turns. [Full list →](docs/reference/tools.mdx)
 
-## 12 Bundled Skills
+## 18 Bundled Skills
 
 | Skill | Purpose |
 |-------|---------|
@@ -92,6 +92,12 @@ File ops, search, shell, git, web, LSP, MCP, notebooks, tasks, and more. Tools e
 | `/advisor` | Architecture and dependency health analysis |
 | `/bughunter` | Systematic bug search |
 | `/plan` | Structured implementation planning |
+| `/changelog` | Generate changelog entries from commit history |
+| `/release` | Cut a versioned release |
+| `/benchmark` | Run and compare benchmarks |
+| `/coverage` | Measure and report test coverage |
+| `/migrate` | Apply codebase-wide migrations |
+| `/docs` | Generate or update documentation |
 
 Add custom skills as markdown files in `.agent/skills/` or `~/.config/agent-code/skills/`.
 
@@ -122,15 +128,21 @@ disable_bypass_permissions = true
 crates/
   lib/   agent-code-lib    Engine: providers, tools, query loop, memory
   cli/   agent-code        Binary: REPL, TUI, commands, setup wizard
+  eval/  agent-code-eval   Evaluation harness for benchmarking the engine
+
+packages/
+  agent_code_client        Dart client library for talking to the engine
+
+client/                    Cross-platform Flutter desktop/web GUI (see client/README.md)
 ```
 
-The engine is a reusable library. The binary is a thin wrapper.
+The engine is a reusable library. The CLI binary is a thin wrapper. The Flutter client in `client/` is a separate front-end that talks to the engine via the `agent_code_client` package.
 
-## 43 Slash Commands
+## 52 Slash Commands
 
 Session management, context control, git operations, agent coordination, configuration, diagnostics, and more. [Full list →](docs/reference/commands.mdx)
 
-Highlights: `/release-notes`, `/summary`, `/feedback`, `/share`, `/update`, `/doctor`, `/plan`, `/model`, `/cost`, `/scroll`, `/rewind`, `/fork`
+Highlights: `/release-notes`, `/summary`, `/feedback`, `/share`, `/update`, `/uninstall`, `/doctor`, `/plan`, `/model`, `/cost`, `/scroll`, `/rewind`, `/fork`
 
 ## Security
 
@@ -151,7 +163,7 @@ Protected directories (`.git/`, `.husky/`, `node_modules/`) are blocked from wri
 git clone https://github.com/avala-ai/agent-code.git
 cd agent-code
 cargo build
-cargo test    # 225+ tests
+cargo test    # 650+ tests
 cargo clippy  # zero warnings
 ```
 
