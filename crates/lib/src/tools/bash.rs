@@ -250,12 +250,41 @@ impl Tool for BashTool {
             return run_background(command, &ctx.cwd, ctx.task_manager.as_ref()).await;
         }
 
-        let mut child = Command::new("bash")
-            .arg("-c")
+        // Build the base bash command.
+        let mut base = Command::new("bash");
+        base.arg("-c")
             .arg(command)
             .current_dir(&ctx.cwd)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Honor a tool-call-level `dangerouslyDisableSandbox: true` by
+        // skipping the sandbox wrapper. This path is blocked entirely
+        // when the session has `security.disable_bypass_permissions = true`.
+        let disable_sandbox_requested = input
+            .get("dangerouslyDisableSandbox")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let mut cmd = if let Some(ref sandbox) = ctx.sandbox {
+            if disable_sandbox_requested && sandbox.allow_bypass() {
+                tracing::warn!(
+                    "bash call set dangerouslyDisableSandbox; wrapping skipped for this call"
+                );
+                base
+            } else {
+                if disable_sandbox_requested && !sandbox.allow_bypass() {
+                    tracing::warn!(
+                        "dangerouslyDisableSandbox ignored: security.disable_bypass_permissions is set"
+                    );
+                }
+                sandbox.wrap(base)
+            }
+        } else {
+            base
+        };
+
+        let mut child = cmd
             .spawn()
             .map_err(|e| ToolError::ExecutionFailed(format!("Failed to spawn: {e}")))?;
 
