@@ -32,51 +32,28 @@ impl Config {
     }
 
     fn load_inner() -> Result<Config, ConfigError> {
-        // Merge config files at the raw `toml::Value` level *before* typed
-        // deserialization. If we deserialized each layer into `Config` first,
-        // `#[serde(default)]` would synthesize full `ApiConfig::default()` /
-        // `UiConfig::default()` / etc. for any section the file omits, and
-        // those synthesized defaults would clobber real values from lower
-        // layers during merge (see issue #101). Merging raw keeps absent
-        // sections absent until the single final `try_into` below.
-        let mut merged = toml::Value::Table(toml::value::Table::new());
-        // `permissions.rules` has extend-semantics (user rules + project rules
-        // concatenated). The recursive table merge would replace the array, so
-        // we collect each layer's rules separately and splice them in after.
-        let mut all_rules: Vec<toml::Value> = Vec::new();
+        let mut layers: Vec<String> = Vec::new();
 
         // Layer 1: User-level config (lowest priority file).
         if let Some(path) = user_config_path()
             && path.exists()
         {
-            let content = std::fs::read_to_string(&path)
-                .map_err(|e| ConfigError::FileError(format!("{path:?}: {e}")))?;
-            let value: toml::Value = toml::from_str(&content)?;
-            collect_permission_rules(&value, &mut all_rules);
-            merge_toml_values(&mut merged, &value);
+            layers.push(
+                std::fs::read_to_string(&path)
+                    .map_err(|e| ConfigError::FileError(format!("{path:?}: {e}")))?,
+            );
         }
 
         // Layer 2: Project-level config (overrides user config).
         if let Some(path) = find_project_config() {
-            let content = std::fs::read_to_string(&path)
-                .map_err(|e| ConfigError::FileError(format!("{path:?}: {e}")))?;
-            let value: toml::Value = toml::from_str(&content)?;
-            collect_permission_rules(&value, &mut all_rules);
-            merge_toml_values(&mut merged, &value);
+            layers.push(
+                std::fs::read_to_string(&path)
+                    .map_err(|e| ConfigError::FileError(format!("{path:?}: {e}")))?,
+            );
         }
 
-        if !all_rules.is_empty()
-            && let toml::Value::Table(root) = &mut merged
-        {
-            let perms = root
-                .entry("permissions".to_string())
-                .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
-            if let toml::Value::Table(pt) = perms {
-                pt.insert("rules".to_string(), toml::Value::Array(all_rules));
-            }
-        }
-
-        let mut config: Config = merged.try_into()?;
+        let layer_refs: Vec<&str> = layers.iter().map(String::as_str).collect();
+        let mut config = merge_layer_contents(&layer_refs)?;
 
         // Layer 3: Environment variables override file-based config.
         // API key from env always wins over config files, because users
@@ -99,6 +76,43 @@ impl Config {
 
         Ok(config)
     }
+}
+
+/// Merge a sequence of TOML config layers (lowest → highest priority) into a
+/// typed `Config`. Layers are merged at the raw `toml::Value` level *before*
+/// typed deserialization so that `#[serde(default)]` cannot synthesize
+/// placeholder sections that clobber real values from lower layers
+/// (see issue #101). The final `try_into` runs exactly once, so defaults
+/// only fill fields nobody set in any layer.
+///
+/// `permissions.rules` has extend-semantics (layers concatenate rather than
+/// replace), implemented by pulling each layer's rules aside and splicing
+/// them back after the recursive merge.
+pub(crate) fn merge_layer_contents(layers: &[&str]) -> Result<Config, ConfigError> {
+    let mut merged = toml::Value::Table(toml::value::Table::new());
+    let mut all_rules: Vec<toml::Value> = Vec::new();
+
+    for content in layers {
+        if content.is_empty() {
+            continue;
+        }
+        let value: toml::Value = toml::from_str(content)?;
+        collect_permission_rules(&value, &mut all_rules);
+        merge_toml_values(&mut merged, &value);
+    }
+
+    if !all_rules.is_empty()
+        && let toml::Value::Table(root) = &mut merged
+    {
+        let perms = root
+            .entry("permissions".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+        if let toml::Value::Table(pt) = perms {
+            pt.insert("rules".to_string(), toml::Value::Array(all_rules));
+        }
+    }
+
+    Ok(merged.try_into()?)
 }
 
 /// Recursively merge `overlay` into `base`. Tables merge key-by-key; any
@@ -225,33 +239,8 @@ fn find_config_in_ancestors(start: &Path) -> Option<PathBuf> {
 mod merge_tests {
     use super::*;
 
-    /// Helper: simulate load_inner's merge pipeline for two layers, returning
-    /// the final typed Config.
     fn merge_layers(user: &str, project: &str) -> Config {
-        let mut merged = toml::Value::Table(toml::value::Table::new());
-        let mut all_rules: Vec<toml::Value> = Vec::new();
-
-        for layer in [user, project] {
-            if layer.is_empty() {
-                continue;
-            }
-            let v: toml::Value = toml::from_str(layer).unwrap();
-            collect_permission_rules(&v, &mut all_rules);
-            merge_toml_values(&mut merged, &v);
-        }
-
-        if !all_rules.is_empty()
-            && let toml::Value::Table(root) = &mut merged
-        {
-            let perms = root
-                .entry("permissions".to_string())
-                .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
-            if let toml::Value::Table(pt) = perms {
-                pt.insert("rules".to_string(), toml::Value::Array(all_rules));
-            }
-        }
-
-        merged.try_into().unwrap()
+        merge_layer_contents(&[user, project]).unwrap()
     }
 
     // ---- Issue #101: project config without [api] must not clobber user api ----
@@ -416,5 +405,269 @@ model = "m2"
         let overlay = toml::Value::String("new".into());
         merge_toml_values(&mut base, &overlay);
         assert_eq!(base.as_str(), Some("new"));
+    }
+}
+
+#[cfg(test)]
+mod e2e_tests {
+    //! End-to-end tests that write real TOML files to a temp directory and
+    //! drive the full file-reading + merge pipeline. These cover everything
+    //! `Config::load` does except the XDG path resolution and env overrides,
+    //! both of which would require process-global mutation to test.
+    //!
+    //! Also covers `find_config_in_ancestors` directly against a tempdir tree.
+
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Write user + project files and drive the full load pipeline the way
+    /// `load_inner` does: read each file to a String, then merge.
+    fn load_from_files(user_toml: Option<&str>, project_toml: Option<&str>) -> Config {
+        let dir = TempDir::new().unwrap();
+        let mut layers: Vec<String> = Vec::new();
+
+        if let Some(body) = user_toml {
+            let path = dir.path().join("user.toml");
+            fs::write(&path, body).unwrap();
+            layers.push(fs::read_to_string(&path).unwrap());
+        }
+        if let Some(body) = project_toml {
+            let path = dir.path().join("project.toml");
+            fs::write(&path, body).unwrap();
+            layers.push(fs::read_to_string(&path).unwrap());
+        }
+
+        let refs: Vec<&str> = layers.iter().map(String::as_str).collect();
+        merge_layer_contents(&refs).unwrap()
+    }
+
+    // ---- Issue #101 reproduction, through real files ----
+
+    #[test]
+    fn e2e_issue_101_ollama_user_preserved_when_project_has_only_mcp_servers() {
+        let user = r#"
+[api]
+base_url = "http://localhost:11434/v1"
+model = "gemma4:26b"
+api_key = "ollama"
+"#;
+        let project = r#"
+[mcp_servers.my-server]
+command = "/usr/local/bin/my-mcp"
+args = []
+"#;
+        let cfg = load_from_files(Some(user), Some(project));
+        assert_eq!(cfg.api.base_url, "http://localhost:11434/v1");
+        assert_eq!(cfg.api.model, "gemma4:26b");
+        assert_eq!(cfg.api.api_key.as_deref(), Some("ollama"));
+        assert_eq!(
+            cfg.mcp_servers["my-server"].command.as_deref(),
+            Some("/usr/local/bin/my-mcp")
+        );
+    }
+
+    #[test]
+    fn e2e_only_user_config_exists() {
+        let user = r#"
+[api]
+base_url = "http://example.com/v1"
+model = "custom"
+"#;
+        let cfg = load_from_files(Some(user), None);
+        assert_eq!(cfg.api.base_url, "http://example.com/v1");
+        assert_eq!(cfg.api.model, "custom");
+    }
+
+    #[test]
+    fn e2e_only_project_config_exists() {
+        let project = r#"
+[api]
+base_url = "http://proj.example.com/v1"
+model = "proj-model"
+"#;
+        let cfg = load_from_files(None, Some(project));
+        assert_eq!(cfg.api.base_url, "http://proj.example.com/v1");
+        assert_eq!(cfg.api.model, "proj-model");
+    }
+
+    #[test]
+    fn e2e_no_config_files_yields_defaults() {
+        let cfg = load_from_files(None, None);
+        assert_eq!(cfg.api.model, "gpt-5.4");
+        assert_eq!(cfg.permissions.default_mode, PermissionMode::Ask);
+        assert!(cfg.ui.markdown);
+    }
+
+    #[test]
+    fn e2e_project_overrides_model_keeps_user_base_url() {
+        let user = r#"
+[api]
+base_url = "http://ollama.local/v1"
+model = "gemma4:26b"
+"#;
+        let project = r#"
+[api]
+model = "llama3:70b"
+"#;
+        let cfg = load_from_files(Some(user), Some(project));
+        assert_eq!(cfg.api.base_url, "http://ollama.local/v1");
+        assert_eq!(cfg.api.model, "llama3:70b");
+    }
+
+    #[test]
+    fn e2e_project_overrides_single_ui_field_keeps_others() {
+        let user = r#"
+[ui]
+theme = "solarized"
+edit_mode = "vi"
+markdown = false
+"#;
+        let project = r#"
+[ui]
+theme = "light"
+"#;
+        let cfg = load_from_files(Some(user), Some(project));
+        assert_eq!(cfg.ui.theme, "light");
+        assert_eq!(cfg.ui.edit_mode, "vi");
+        assert!(!cfg.ui.markdown);
+    }
+
+    #[test]
+    fn e2e_permission_rules_concatenate_across_layers() {
+        let user = r#"
+[[permissions.rules]]
+tool = "Read"
+action = "allow"
+
+[[permissions.rules]]
+tool = "Bash"
+pattern = "rm -rf /"
+action = "deny"
+"#;
+        let project = r#"
+[[permissions.rules]]
+tool = "Write"
+action = "ask"
+"#;
+        let cfg = load_from_files(Some(user), Some(project));
+        assert_eq!(cfg.permissions.rules.len(), 3);
+        let tools: Vec<&str> = cfg
+            .permissions
+            .rules
+            .iter()
+            .map(|r| r.tool.as_str())
+            .collect();
+        assert_eq!(tools, vec!["Read", "Bash", "Write"]);
+    }
+
+    #[test]
+    fn e2e_mcp_servers_union_by_name() {
+        let user = r#"
+[mcp_servers.alpha]
+command = "user-alpha"
+
+[mcp_servers.beta]
+command = "user-beta"
+"#;
+        let project = r#"
+[mcp_servers.beta]
+command = "project-beta"
+
+[mcp_servers.gamma]
+command = "project-gamma"
+"#;
+        let cfg = load_from_files(Some(user), Some(project));
+        assert_eq!(cfg.mcp_servers.len(), 3);
+        assert_eq!(
+            cfg.mcp_servers["alpha"].command.as_deref(),
+            Some("user-alpha")
+        );
+        assert_eq!(
+            cfg.mcp_servers["beta"].command.as_deref(),
+            Some("project-beta")
+        );
+        assert_eq!(
+            cfg.mcp_servers["gamma"].command.as_deref(),
+            Some("project-gamma")
+        );
+    }
+
+    #[test]
+    fn e2e_feature_flags_partial_override() {
+        let user = r#"
+[features]
+token_budget = false
+prompt_caching = false
+"#;
+        let project = r#"
+[features]
+token_budget = true
+"#;
+        let cfg = load_from_files(Some(user), Some(project));
+        assert!(cfg.features.token_budget); // project flipped it
+        assert!(!cfg.features.prompt_caching); // user value preserved
+        assert!(cfg.features.commit_attribution); // struct default
+    }
+
+    #[test]
+    fn e2e_malformed_toml_is_surfaced_as_parse_error() {
+        let bad = "this is = = not valid toml\n[[[";
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bad.toml");
+        fs::write(&path, bad).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        let err = merge_layer_contents(&[&content]).unwrap_err();
+        assert!(matches!(err, ConfigError::ParseError(_)));
+    }
+
+    // ---- find_config_in_ancestors over a real directory tree ----
+
+    #[test]
+    fn e2e_find_project_config_walks_up_from_nested_dir() {
+        let root = TempDir::new().unwrap();
+        let project_root = root.path().join("myproj");
+        let nested = project_root.join("crates").join("deep").join("src");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(project_root.join(".agent")).unwrap();
+        let settings = project_root.join(".agent").join("settings.toml");
+        fs::write(&settings, "[api]\nmodel = \"from-ancestor\"\n").unwrap();
+
+        let found = find_config_in_ancestors(&nested).unwrap();
+        assert_eq!(found, settings);
+    }
+
+    #[test]
+    fn e2e_find_project_config_returns_none_when_absent() {
+        let root = TempDir::new().unwrap();
+        let nested = root.path().join("a").join("b").join("c");
+        fs::create_dir_all(&nested).unwrap();
+        // No `.agent/settings.toml` anywhere.
+        // The walk may still hit a real `.agent/settings.toml` in a parent of
+        // the tempdir root (unlikely but possible on dev machines). Guard by
+        // checking the result is either None or outside our tempdir.
+        if let Some(path) = find_config_in_ancestors(&nested) {
+            assert!(
+                !path.starts_with(root.path()),
+                "unexpected settings.toml inside tempdir: {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn e2e_find_project_config_stops_at_first_match() {
+        let root = TempDir::new().unwrap();
+        // Two levels, both with .agent/settings.toml. The inner one should win.
+        let outer = root.path().join("outer");
+        let inner = outer.join("inner");
+        fs::create_dir_all(inner.join(".agent")).unwrap();
+        fs::create_dir_all(outer.join(".agent")).unwrap();
+        let inner_settings = inner.join(".agent").join("settings.toml");
+        let outer_settings = outer.join(".agent").join("settings.toml");
+        fs::write(&inner_settings, "[api]\nmodel = \"inner\"\n").unwrap();
+        fs::write(&outer_settings, "[api]\nmodel = \"outer\"\n").unwrap();
+
+        let found = find_config_in_ancestors(&inner).unwrap();
+        assert_eq!(found, inner_settings);
     }
 }
