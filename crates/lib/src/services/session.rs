@@ -11,6 +11,7 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::llm::message::Message;
+use crate::services::secret_masker;
 
 /// Serializable session state persisted to disk.
 ///
@@ -109,6 +110,12 @@ pub fn save_session_full(
 
     let json = serde_json::to_string_pretty(&data)
         .map_err(|e| format!("Failed to serialize session: {e}"))?;
+
+    // Mask secrets at the persistence boundary. Applied to the fully
+    // serialized JSON so the same regex set covers every text-bearing
+    // field (tool results, user messages, metadata). Escaped JSON
+    // strings still match the same patterns at the byte level.
+    let json = secret_masker::mask(&json);
 
     std::fs::write(&path, json).map_err(|e| format!("Failed to write session file: {e}"))?;
 

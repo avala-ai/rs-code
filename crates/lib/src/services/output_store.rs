@@ -6,6 +6,8 @@
 
 use std::path::PathBuf;
 
+use crate::services::secret_masker;
+
 /// Maximum inline output size (64KB). Larger results are persisted.
 const INLINE_THRESHOLD: usize = 64 * 1024;
 
@@ -25,7 +27,12 @@ pub fn persist_if_large(content: &str, _tool_name: &str, tool_use_id: &str) -> S
     let filename = format!("{tool_use_id}.txt");
     let path = store_dir.join(&filename);
 
-    match std::fs::write(&path, content) {
+    // Mask secrets at the persistence boundary. The returned preview
+    // is kept unmasked for in-memory agent use; only the on-disk copy
+    // is sanitized.
+    let persisted = secret_masker::mask(content);
+
+    match std::fs::write(&path, &persisted) {
         Ok(()) => {
             let preview = &content[..INLINE_THRESHOLD.min(content.len())];
             format!(
