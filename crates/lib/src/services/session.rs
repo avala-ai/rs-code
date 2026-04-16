@@ -209,7 +209,42 @@ pub fn new_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::message::user_message;
+    use crate::llm::message::{ContentBlock, Message, UserMessage, user_message};
+
+    /// Helper: build a session containing the given messages with
+    /// fixed, deterministic metadata. Used by wire-up tests.
+    fn make_session(messages: Vec<Message>) -> SessionData {
+        SessionData {
+            id: "fixture".into(),
+            created_at: "2026-04-15T00:00:00Z".into(),
+            updated_at: "2026-04-15T00:00:00Z".into(),
+            cwd: "/work".into(),
+            model: "test-model".into(),
+            messages,
+            turn_count: 1,
+            total_cost_usd: 0.0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            plan_mode: false,
+        }
+    }
+
+    /// Helper: a user message whose sole content block is a tool_result
+    /// (simulates the agent receiving tool output that embedded a secret).
+    fn tool_result_user_message(tool_use_id: &str, content: &str) -> Message {
+        Message::User(UserMessage {
+            uuid: uuid::Uuid::new_v4(),
+            timestamp: "2026-04-15T00:00:00Z".to_string(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: tool_use_id.to_string(),
+                content: content.to_string(),
+                is_error: false,
+                extra_content: Vec::new(),
+            }],
+            is_meta: false,
+            is_compact_summary: false,
+        })
+    }
 
     #[test]
     fn test_new_session_id_format() {
@@ -399,6 +434,84 @@ mod tests {
                 parsed.err().unwrap(),
             );
         }
+    }
+
+    #[test]
+    fn serialize_masked_redacts_secret_in_tool_result_block() {
+        // Tool output commonly leaks env vars. When the session is
+        // serialized, secrets inside ToolResult content must be scrubbed
+        // just like those in plain text blocks.
+        let leaked = "export AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyz1234";
+        let data = make_session(vec![tool_result_user_message("call-1", leaked)]);
+        let out = serialize_masked(&data).unwrap();
+        assert!(
+            !out.contains("abcdefghijklmnopqrstuvwxyz1234"),
+            "tool_result secret survived serialization",
+        );
+        assert!(out.contains("REDACTED"));
+        // Round-trip must still work.
+        let _: SessionData =
+            serde_json::from_str(&out).expect("tool_result session must round-trip");
+    }
+
+    #[test]
+    fn serialize_masked_handles_many_messages_with_mixed_secrets() {
+        // Stress: multiple messages, mixed speakers, multiple secret
+        // shapes. All must be masked and the result must still parse.
+        let messages = vec![
+            user_message("AKIAIOSFODNN7EXAMPLE leaked in user message"),
+            tool_result_user_message(
+                "t1",
+                r#"env dump: DATABASE_URL=postgres://user:hunter2hunter2@host/db"#,
+            ),
+            user_message("auth_token = abcdefghijklmnop"),
+            tool_result_user_message("t2", "config.toml says api_key = \"secretprovidervalue\""),
+        ];
+        let data = make_session(messages);
+        let out = serialize_masked(&data).unwrap();
+
+        // No raw secrets remain.
+        for needle in [
+            "AKIAIOSFODNN7EXAMPLE",
+            "hunter2hunter2",
+            "abcdefghijklmnop",
+            "secretprovidervalue",
+        ] {
+            assert!(!out.contains(needle), "leaked {needle} in: {out}",);
+        }
+        // Multiple REDACTED markers present.
+        assert!(out.matches("REDACTED").count() >= 4);
+        // JSON must round-trip through a real parse.
+        let parsed: SessionData =
+            serde_json::from_str(&out).expect("mixed-secret session must round-trip");
+        assert_eq!(parsed.messages.len(), 4);
+    }
+
+    #[test]
+    fn serialize_masked_is_idempotent_save_load_save() {
+        // Re-saving a loaded session must produce byte-identical JSON
+        // (the masker replaced all secrets on the first save; the
+        // second save should find nothing to mask).
+        let data = make_session(vec![
+            user_message("AKIAIOSFODNN7EXAMPLE and api_key=hunter2hunter2"),
+            tool_result_user_message(
+                "t1",
+                "ghp_abcdefghijklmnopqrstuvwxyz0123456789 then password='firstpassword1234'",
+            ),
+        ]);
+
+        let first = serialize_masked(&data).unwrap();
+        let loaded: SessionData = serde_json::from_str(&first).expect("first save must parse");
+
+        // Mirror production: save_session_full re-uses timestamps from
+        // in-memory state, so clone the loaded data as the next save's
+        // input (keeping everything deterministic for the comparison).
+        let second = serialize_masked(&loaded).unwrap();
+
+        assert_eq!(
+            first, second,
+            "save→load→save is not idempotent\nfirst:\n{first}\nsecond:\n{second}",
+        );
     }
 
     #[test]

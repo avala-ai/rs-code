@@ -167,4 +167,33 @@ mod tests {
         assert!(!on_disk.contains(secret));
         assert!(on_disk.contains("[REDACTED:credential]"));
     }
+
+    #[test]
+    fn persist_if_large_at_exact_threshold_passes_through() {
+        // Content of exactly INLINE_THRESHOLD bytes must be returned
+        // unchanged (the guard is `content.len() <= INLINE_THRESHOLD`).
+        // Regression-proofs the boundary so a future refactor from
+        // `<=` to `<` would be caught here.
+        let dir = tempfile::tempdir().unwrap();
+        let content = "a".repeat(INLINE_THRESHOLD);
+        let out = persist_if_large_in(dir.path(), &content, "Bash", "tool-boundary-eq");
+        assert_eq!(out.len(), INLINE_THRESHOLD);
+        assert_eq!(out, content);
+        assert!(
+            std::fs::read_dir(dir.path())
+                .map(|mut it| it.next().is_none())
+                .unwrap_or(true),
+            "content at exact threshold should not write to disk",
+        );
+    }
+
+    #[test]
+    fn persist_if_large_at_threshold_plus_one_writes_to_disk() {
+        // One byte past the threshold must trigger a disk write.
+        let dir = tempfile::tempdir().unwrap();
+        let content = "a".repeat(INLINE_THRESHOLD + 1);
+        let preview = persist_if_large_in(dir.path(), &content, "Bash", "tool-boundary-plus-one");
+        assert!(preview.contains("Output truncated"));
+        assert!(dir.path().join("tool-boundary-plus-one.txt").exists());
+    }
 }

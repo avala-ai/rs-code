@@ -637,6 +637,41 @@ mod tests {
     }
 
     #[test]
+    fn compression_state_empty_roundtrip() {
+        let state = FileCompressionState::new();
+        let json = serde_json::to_string(&state).unwrap();
+        let back: FileCompressionState = serde_json::from_str(&json).unwrap();
+        assert!(back.files.is_empty());
+    }
+
+    #[test]
+    fn compression_state_handles_unicode_paths() {
+        let mut state = FileCompressionState::new();
+        let path = PathBuf::from("src/crates/café/niño.rs");
+        state.record_read(&path, "contents", 1);
+        let json = serde_json::to_string(&state).unwrap();
+        let back: FileCompressionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.files.len(), 1);
+        assert!(back.files.contains_key(&path));
+    }
+
+    #[test]
+    fn compression_state_demote_after_protection_window_expires() {
+        // Read at turn 0 → protected until turn 2 (PROTECTED_TURN_WINDOW = 2).
+        // Demote attempts inside the window fail; one past the window succeeds.
+        let mut state = FileCompressionState::new();
+        let path = PathBuf::from("src/hot.rs");
+        state.record_read(&path, "contents", 0);
+        assert!(!state.demote(&path, CompressionLevel::Summary, 0));
+        assert!(!state.demote(&path, CompressionLevel::Summary, 1));
+        assert!(state.demote(&path, CompressionLevel::Summary, 2));
+        assert_eq!(
+            state.files.get(&path).unwrap().level,
+            CompressionLevel::Summary
+        );
+    }
+
+    #[test]
     fn compression_state_roundtrip() {
         let mut state = FileCompressionState::new();
         state.record_read(Path::new("a.rs"), "alpha", 1);
