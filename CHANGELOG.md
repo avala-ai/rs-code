@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+*No changes yet.*
+
+## [0.16.1] - 2026-04-18
+
 ### Fixed
 
 - **Release binary segfault on systems with glibc < 2.39** (#134): pinned Linux release builders from `ubuntu-latest` to `ubuntu-22.04` (glibc 2.35) so the published binaries don't pick up weak `pidfd_spawnp`/`pidfd_getpid` symbols from GLIBC_2.39 that resolve to NULL and segfault when tokio spawns a subprocess on Ubuntu 22.04, Debian 12, RHEL 9, and similar distros.
@@ -154,7 +158,8 @@ Initial public release.
 - **Cross-platform support**: Linux (x86_64, aarch64) and macOS (x86_64, Apple Silicon)
 - **Installation methods**: cargo install, Homebrew tap, curl script, prebuilt binaries
 
-[Unreleased]: https://github.com/avala-ai/agent-code/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/avala-ai/agent-code/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/avala-ai/agent-code/compare/v0.16.0...v0.16.1
 [0.13.1]: https://github.com/avala-ai/agent-code/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/avala-ai/agent-code/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/avala-ai/agent-code/compare/v0.11.1...v0.12.0
