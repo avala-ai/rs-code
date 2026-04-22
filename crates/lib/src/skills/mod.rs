@@ -418,6 +418,29 @@ impl SkillRegistry {
                  whose behavior is load-bearing in a way that isn't obvious from reading \
                  the code — call that out instead of changing it.",
             ),
+            (
+                "skillify",
+                "Extract the successful workflow from this session into a reusable skill",
+                true,
+                "Turn the productive workflow from this conversation into a reusable skill \
+                 file under `.agent/skills/`. Steps:\n\n\
+                 1. Read the last ~20 messages and identify the REPEATABLE workflow — the \
+                 sequence of steps that worked, stripped of session-specific details \
+                 (filenames, variable names, error text).\n\
+                 2. Name the skill in kebab-case (short, imperative: `fix-flaky-test`, \
+                 `rebase-stack`, not `skill-for-that-thing`). Confirm the name doesn't \
+                 collide with an existing skill.\n\
+                 3. Write `.agent/skills/<name>.md` with YAML frontmatter: \
+                 `description` (one line, action-phrased), `whenToUse` (trigger conditions), \
+                 `userInvocable: true`. The body is the prompt — imperative instructions \
+                 with numbered steps and explicit constraints, NOT a narrative of what \
+                 happened this session.\n\
+                 4. Include any hard constraints the user enforced during the session \
+                 (\"don't touch file X\", \"always run tests before push\") as explicit \
+                 rules in the prompt.\n\
+                 5. Show the final skill file to the user before writing, so they can \
+                 edit. After writing, tell them: `/<name>` now invokes it.",
+            ),
         ];
 
         for (name, description, user_invocable, body) in bundled {
