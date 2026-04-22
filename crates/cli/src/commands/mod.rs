@@ -373,6 +373,12 @@ pub const COMMANDS: &[Command] = &[
         hidden: true,
     },
     Command {
+        name: "add-dir",
+        aliases: &[],
+        description: "Track an additional directory alongside the cwd (or list/remove)",
+        hidden: false,
+    },
+    Command {
         name: "rename",
         aliases: &[],
         description: "Set a human-readable label on the current session (or clear it)",
@@ -984,9 +990,18 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             println!(
                 "Context: ~{tokens} tokens ({pct}% of {window} window)\n\
                  Auto-compact at: {threshold} tokens\n\
-                 Messages: {}",
+                 Messages: {}\n\
+                 Working directory: {}",
                 engine.state().messages.len(),
+                engine.state().cwd,
             );
+            let extra = &engine.state().additional_dirs;
+            if !extra.is_empty() {
+                println!("Additional dirs:");
+                for d in extra {
+                    println!("  {d}");
+                }
+            }
             CommandResult::Handled
         }
         Some("agents") => {
@@ -1552,6 +1567,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             heapdump::run();
             CommandResult::Handled
         }
+        Some("add-dir") => {
+            execute_add_dir(args, engine);
+            CommandResult::Handled
+        }
         Some("rename") => {
             let session_id = engine.state().session_id.clone();
             let label = args.map(|s| s.trim()).filter(|s| !s.is_empty());
@@ -1849,6 +1868,75 @@ fn execute_powerup(args: Option<&str>) -> CommandResult {
     } else {
         CommandResult::Handled
     }
+}
+
+/// Execute the /add-dir command.
+///
+/// Forms:
+///   /add-dir                — list currently tracked extra dirs
+///   /add-dir <path>         — add a directory (must exist)
+///   /add-dir --remove <p>   — remove a directory
+///   /add-dir --clear        — remove all
+fn execute_add_dir(args: Option<&str>, engine: &mut QueryEngine) {
+    let raw = args.map(|s| s.trim()).unwrap_or("");
+
+    if raw.is_empty() {
+        let extras = &engine.state().additional_dirs;
+        if extras.is_empty() {
+            println!("No additional directories tracked.");
+            println!("Usage: /add-dir <path>");
+        } else {
+            println!("Additional tracked directories:");
+            for d in extras {
+                println!("  {d}");
+            }
+        }
+        return;
+    }
+
+    if raw == "--clear" {
+        let n = engine.state().additional_dirs.len();
+        engine.state_mut().additional_dirs.clear();
+        println!(
+            "Cleared {n} tracked director{}.",
+            if n == 1 { "y" } else { "ies" }
+        );
+        return;
+    }
+
+    if let Some(rest) = raw.strip_prefix("--remove ") {
+        let target = rest.trim();
+        let existed = engine.state().additional_dirs.iter().any(|d| d == target);
+        engine.state_mut().additional_dirs.retain(|d| d != target);
+        if existed {
+            println!("Removed: {target}");
+        } else {
+            println!("Not tracked: {target}");
+        }
+        return;
+    }
+
+    // Add a directory. Accept both absolute and relative paths; store
+    // canonical form so the agent sees an unambiguous path.
+    let path = std::path::PathBuf::from(raw);
+    let canonical = match path.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Cannot add {raw}: {e}");
+            return;
+        }
+    };
+    if !canonical.is_dir() {
+        eprintln!("Not a directory: {}", canonical.display());
+        return;
+    }
+    let s = canonical.display().to_string();
+    if engine.state().additional_dirs.iter().any(|d| d == &s) {
+        println!("Already tracked: {s}");
+        return;
+    }
+    engine.state_mut().additional_dirs.push(s.clone());
+    println!("Tracking: {s}");
 }
 
 /// Execute the /btw command: save a free-form note to user memory.
