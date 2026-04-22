@@ -211,10 +211,7 @@ pub struct SessionSummary {
 ///
 /// Implemented as load-modify-save so callers don't need to thread the
 /// label through the per-turn persistence path.
-pub fn set_session_label(
-    session_id: &str,
-    label: Option<String>,
-) -> Result<PathBuf, String> {
+pub fn set_session_label(session_id: &str, label: Option<String>) -> Result<PathBuf, String> {
     let mut data = load_session(session_id)?;
     data.label = label;
     data.updated_at = chrono::Utc::now().to_rfc3339();
