@@ -1058,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_accepts_SKILL_md_filename() {
+    fn validate_accepts_skill_md_filename() {
         // Directory-based skill layout: <dir>/SKILL.md is accepted regardless
         // of case because the skill name comes from the directory.
         let dir = tempfile::tempdir().unwrap();
