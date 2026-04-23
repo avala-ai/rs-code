@@ -50,6 +50,11 @@ pub struct SessionData {
     /// in `/sessions` and the resume picker.
     #[serde(default)]
     pub label: Option<String>,
+    /// Tags for filtering sessions (e.g. "wip", "perf", "rust").
+    /// Distinct from `label`: label is a single human-readable name,
+    /// tags are a set for categorization. Managed via `/tag`.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Sessions directory path.
@@ -98,17 +103,17 @@ pub fn save_session_full(
 
     let path = dir.join(format!("{session_id}.json"));
 
-    // Preserve original created_at and label if file exists. Both are
-    // orthogonal to the per-turn save path, so re-read rather than
-    // thread them through every call site.
-    let (created_at, label) = if path.exists() {
+    // Preserve original created_at, label, and tags if file exists.
+    // All are orthogonal to the per-turn save path, so re-read rather
+    // than thread them through every call site.
+    let (created_at, label, tags) = if path.exists() {
         std::fs::read_to_string(&path)
             .ok()
             .and_then(|c| serde_json::from_str::<SessionData>(&c).ok())
-            .map(|d| (d.created_at, d.label))
-            .unwrap_or_else(|| (chrono::Utc::now().to_rfc3339(), None))
+            .map(|d| (d.created_at, d.label, d.tags))
+            .unwrap_or_else(|| (chrono::Utc::now().to_rfc3339(), None, Vec::new()))
     } else {
-        (chrono::Utc::now().to_rfc3339(), None)
+        (chrono::Utc::now().to_rfc3339(), None, Vec::new())
     };
 
     let data = SessionData {
@@ -124,6 +129,7 @@ pub fn save_session_full(
         total_output_tokens,
         plan_mode,
         label,
+        tags,
     };
 
     // Mask secrets at the persistence boundary. Applied to the fully
@@ -185,6 +191,7 @@ pub fn list_sessions(limit: usize) -> Vec<SessionSummary> {
                 message_count: data.messages.len(),
                 updated_at: data.updated_at,
                 label: data.label,
+                tags: data.tags,
             })
         })
         .collect();
@@ -204,6 +211,7 @@ pub struct SessionSummary {
     pub message_count: usize,
     pub updated_at: String,
     pub label: Option<String>,
+    pub tags: Vec<String>,
 }
 
 /// Set (or clear) the human-readable label on a session. Pass `None`
@@ -221,6 +229,66 @@ pub fn set_session_label(session_id: &str, label: Option<String>) -> Result<Path
     let json = serialize_masked(&data)?;
     std::fs::write(&path, json).map_err(|e| format!("Failed to write session file: {e}"))?;
     Ok(path)
+}
+
+/// Normalize a user-supplied tag: trim, lowercase, reject empty /
+/// whitespace-only / punctuation-containing tags. Returns a normalized
+/// copy on success, or an error string explaining why it was rejected.
+pub fn normalize_tag(raw: &str) -> Result<String, String> {
+    let t = raw.trim().to_ascii_lowercase();
+    if t.is_empty() {
+        return Err("tag is empty".to_string());
+    }
+    if t.len() > 32 {
+        return Err(format!("tag '{t}' exceeds 32 characters"));
+    }
+    if !t
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "tag '{t}' contains disallowed characters (allowed: letters, digits, '-', '_')"
+        ));
+    }
+    Ok(t)
+}
+
+/// Add a tag to the session. Idempotent: if the tag is already present,
+/// returns `Ok(false)`; on add returns `Ok(true)`.
+pub fn add_session_tag(session_id: &str, tag: &str) -> Result<bool, String> {
+    let normalized = normalize_tag(tag)?;
+    let mut data = load_session(session_id)?;
+    if data.tags.iter().any(|t| t == &normalized) {
+        return Ok(false);
+    }
+    data.tags.push(normalized);
+    data.tags.sort();
+    data.updated_at = chrono::Utc::now().to_rfc3339();
+    write_back(&data)?;
+    Ok(true)
+}
+
+/// Remove a tag from the session. Returns `Ok(false)` if the tag
+/// wasn't present, `Ok(true)` if it was removed.
+pub fn remove_session_tag(session_id: &str, tag: &str) -> Result<bool, String> {
+    let normalized = normalize_tag(tag)?;
+    let mut data = load_session(session_id)?;
+    let before = data.tags.len();
+    data.tags.retain(|t| t != &normalized);
+    if data.tags.len() == before {
+        return Ok(false);
+    }
+    data.updated_at = chrono::Utc::now().to_rfc3339();
+    write_back(&data)?;
+    Ok(true)
+}
+
+/// Persist a modified SessionData back to the sessions dir.
+fn write_back(data: &SessionData) -> Result<(), String> {
+    let dir = sessions_dir().ok_or("Could not determine sessions directory")?;
+    let path = dir.join(format!("{}.json", data.id));
+    let json = serialize_masked(data)?;
+    std::fs::write(&path, json).map_err(|e| format!("Failed to write session file: {e}"))
 }
 
 /// Generate a new session ID.
@@ -254,6 +322,7 @@ mod tests {
             total_output_tokens: 0,
             plan_mode: false,
             label: None,
+            tags: Vec::new(),
         }
     }
 
@@ -312,6 +381,7 @@ mod tests {
             total_output_tokens: 0,
             plan_mode: false,
             label: None,
+            tags: Vec::new(),
         };
         let json = serde_json::to_string_pretty(&data).unwrap();
         std::fs::create_dir_all(dir.path()).unwrap();
@@ -341,6 +411,7 @@ mod tests {
             total_output_tokens: 500,
             plan_mode: false,
             label: None,
+            tags: Vec::new(),
         };
 
         let json = serde_json::to_string(&data).unwrap();
@@ -369,6 +440,7 @@ mod tests {
             total_output_tokens: 0,
             plan_mode: false,
             label: None,
+            tags: Vec::new(),
         };
         let out = serialize_masked(&data).unwrap();
         assert!(
@@ -397,6 +469,7 @@ mod tests {
             total_output_tokens: 0,
             plan_mode: false,
             label: None,
+            tags: Vec::new(),
         };
         let out = serialize_masked(&data).unwrap();
         assert!(!out.contains("verylongprovidersecret1234567890"));
@@ -422,6 +495,7 @@ mod tests {
             total_output_tokens: 0,
             plan_mode: false,
             label: None,
+            tags: Vec::new(),
         };
         let out = serialize_masked(&data).unwrap();
         // Must still parse back as a SessionData.
@@ -459,6 +533,7 @@ mod tests {
                 total_output_tokens: 0,
                 plan_mode: false,
                 label: None,
+                tags: Vec::new(),
             };
             let out = serialize_masked(&data).unwrap();
             let parsed: Result<SessionData, _> = serde_json::from_str(&out);
@@ -563,6 +638,7 @@ mod tests {
             total_output_tokens: 0,
             plan_mode: false,
             label: None,
+            tags: Vec::new(),
         };
         let out = serialize_masked(&data).unwrap();
         assert!(!out.contains("REDACTED"));
@@ -584,6 +660,7 @@ mod tests {
             total_output_tokens: 0,
             plan_mode: false,
             label: Some("refactor pass".into()),
+            tags: Vec::new(),
         };
         let json = serde_json::to_string(&data).unwrap();
         let back: SessionData = serde_json::from_str(&json).unwrap();
@@ -616,9 +693,45 @@ mod tests {
             message_count: 20,
             updated_at: "2026-03-31".to_string(),
             label: None,
+            tags: Vec::new(),
         };
         assert_eq!(summary.id, "xyz");
         assert_eq!(summary.turn_count, 10);
         assert_eq!(summary.message_count, 20);
+    }
+
+    #[test]
+    fn normalize_tag_accepts_safe_tags() {
+        assert_eq!(normalize_tag("wip").unwrap(), "wip");
+        assert_eq!(normalize_tag("Perf").unwrap(), "perf");
+        assert_eq!(normalize_tag("  rust  ").unwrap(), "rust");
+        assert_eq!(normalize_tag("feat-auth").unwrap(), "feat-auth");
+        assert_eq!(normalize_tag("v2_api").unwrap(), "v2_api");
+    }
+
+    #[test]
+    fn normalize_tag_rejects_bad_tags() {
+        assert!(normalize_tag("").is_err());
+        assert!(normalize_tag("   ").is_err());
+        assert!(normalize_tag("foo bar").is_err());
+        assert!(normalize_tag("foo/bar").is_err());
+        assert!(normalize_tag("foo.bar").is_err());
+        assert!(normalize_tag(&"a".repeat(33)).is_err());
+    }
+
+    #[test]
+    fn tags_missing_from_old_json_defaults_to_empty() {
+        // Sessions written before the tags field existed must still load.
+        let json = serde_json::json!({
+            "id": "old",
+            "created_at": "2026-04-15T00:00:00Z",
+            "updated_at": "2026-04-15T00:00:00Z",
+            "cwd": "/work",
+            "model": "m",
+            "messages": [],
+            "turn_count": 1,
+        });
+        let data: SessionData = serde_json::from_value(json).unwrap();
+        assert!(data.tags.is_empty());
     }
 }
