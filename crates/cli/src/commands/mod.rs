@@ -835,12 +835,23 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                         }
                     }
                 }
+                "validate" | "lint" if !subarg.is_empty() => {
+                    execute_skill_validate(&subarg);
+                }
+                "validate" | "lint" => {
+                    println!("Usage: /skill validate <path-or-name>");
+                    println!(
+                        "  Path can be a skill file (my-skill.md) or a directory \
+                         (the tool walks .md files inside)."
+                    );
+                }
                 "help" | "" => {
                     println!("Skill management commands:\n");
                     println!("  /skill search [query]    Search the remote skill index");
                     println!("  /skill install <name>    Install a skill from the index");
                     println!("  /skill remove <name>     Remove an installed skill");
                     println!("  /skill installed         List user-installed skills");
+                    println!("  /skill validate <path>   Lint a skill file or directory");
                     println!("  /skill help              Show this help");
                 }
                 _ => {
@@ -2598,6 +2609,66 @@ fn execute_profile(args: Option<&str>, engine: &mut QueryEngine) {
             eprintln!("Unknown subcommand: {other}");
             println!("Try /profile help");
         }
+    }
+}
+
+/// Execute `/skill validate <path>`. Lints the skill file (or every
+/// `.md` file in the directory) and prints findings grouped by file.
+fn execute_skill_validate(target: &str) {
+    let path = std::path::PathBuf::from(target);
+    if !path.exists() {
+        eprintln!("Not found: {target}");
+        return;
+    }
+
+    let files: Vec<std::path::PathBuf> = if path.is_dir() {
+        std::fs::read_dir(&path)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|e| e == "md"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        vec![path]
+    };
+
+    if files.is_empty() {
+        println!("No .md files to validate at {target}.");
+        return;
+    }
+
+    let mut any_findings = false;
+    let mut total_errors = 0usize;
+    let mut total_warns = 0usize;
+
+    for file in &files {
+        let findings = agent_code_lib::skills::validate_skill_file(file);
+        if findings.is_empty() {
+            println!("  ✓ {}", file.display());
+            continue;
+        }
+        any_findings = true;
+        println!("  ✗ {}", file.display());
+        for f in &findings {
+            match f.level {
+                agent_code_lib::skills::ValidationLevel::Error => total_errors += 1,
+                agent_code_lib::skills::ValidationLevel::Warning => total_warns += 1,
+                agent_code_lib::skills::ValidationLevel::Info => {}
+            }
+            println!("     [{}] {}", f.level.label(), f.message);
+        }
+    }
+
+    println!();
+    if any_findings {
+        println!(
+            "  Summary: {total_errors} error(s), {total_warns} warning(s) across {} file(s).",
+            files.len()
+        );
+    } else {
+        println!("  All {} skill file(s) clean.", files.len());
     }
 }
 

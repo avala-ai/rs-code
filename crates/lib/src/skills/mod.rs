@@ -604,6 +604,173 @@ impl SkillRegistry {
     }
 }
 
+/// Severity of a validation finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValidationLevel {
+    Error,
+    Warning,
+    Info,
+}
+
+impl ValidationLevel {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ValidationLevel::Error => "error",
+            ValidationLevel::Warning => "warn",
+            ValidationLevel::Info => "info",
+        }
+    }
+}
+
+/// A single finding produced by [`validate_skill_file`].
+#[derive(Debug)]
+pub struct Finding {
+    pub level: ValidationLevel,
+    pub message: String,
+}
+
+/// Validate a skill file at `path`. Returns an ordered list of findings;
+/// an empty list means the skill is clean.
+///
+/// Errors (parse/read failures) are returned as findings, not `Result::Err`,
+/// so callers can report multiple problems at once.
+pub fn validate_skill_file(path: &Path) -> Vec<Finding> {
+    let mut out = Vec::new();
+
+    // Filename hygiene. Skills are invoked as /name, so the name needs to be
+    // kebab-case and safe to type.
+    let filename = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("<unreadable>");
+    if filename != "SKILL" && !is_kebab_case(filename) {
+        out.push(Finding {
+            level: ValidationLevel::Warning,
+            message: format!(
+                "filename '{filename}' is not kebab-case — skill will be invoked as \
+                 /{filename}, which may be awkward to type"
+            ),
+        });
+    }
+
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            out.push(Finding {
+                level: ValidationLevel::Error,
+                message: format!("cannot read file: {e}"),
+            });
+            return out;
+        }
+    };
+
+    let (meta, body) = match parse_frontmatter(&content) {
+        Ok(r) => r,
+        Err(e) => {
+            out.push(Finding {
+                level: ValidationLevel::Error,
+                message: format!("frontmatter: {e}"),
+            });
+            return out;
+        }
+    };
+
+    // Required / strongly-suggested fields.
+    match meta.description.as_deref() {
+        None | Some("") => out.push(Finding {
+            level: ValidationLevel::Error,
+            message: "missing `description` — required for /help and for the agent to \
+                      decide when to suggest this skill"
+                .to_string(),
+        }),
+        Some(d) if d.len() > 160 => out.push(Finding {
+            level: ValidationLevel::Warning,
+            message: format!(
+                "description is {} chars (>160) — trim to one short sentence",
+                d.len()
+            ),
+        }),
+        _ => {}
+    }
+
+    if meta.user_invocable && meta.when_to_use.as_deref().unwrap_or("").is_empty() {
+        out.push(Finding {
+            level: ValidationLevel::Warning,
+            message: "`whenToUse` is empty — the agent has no cue to suggest this skill \
+                      unasked; consider adding trigger conditions"
+                .to_string(),
+        });
+    }
+
+    // Body quality — short / narrative / missing imperative structure.
+    let body_trimmed = body.trim();
+    if body_trimmed.is_empty() {
+        out.push(Finding {
+            level: ValidationLevel::Error,
+            message: "body is empty — a skill is a prompt, and the prompt is the body".to_string(),
+        });
+    } else if body_trimmed.len() < 100 {
+        out.push(Finding {
+            level: ValidationLevel::Warning,
+            message: format!(
+                "body is short ({} chars) — skills usually need explicit numbered \
+                 steps and explicit rules; a one-line prompt is rarely enough",
+                body_trimmed.len()
+            ),
+        });
+    }
+
+    let lower = body_trimmed.to_lowercase();
+    for narrative in [
+        "i will",
+        "i'll",
+        "i'm going to",
+        "let me ",
+        "we should",
+        "we'll",
+    ] {
+        if lower.contains(narrative) {
+            out.push(Finding {
+                level: ValidationLevel::Warning,
+                message: format!(
+                    "body contains narrative phrase '{narrative}' — skills are \
+                     imperative prompts, not first-person plans; rewrite as a \
+                     command to the model"
+                ),
+            });
+            break; // One hit is enough; don't spam.
+        }
+    }
+
+    // Shell-fence sanity — if the body contains shell blocks, the author
+    // should know those are affected by `disable_skill_shell_execution`.
+    if has_shell_fence(body_trimmed) {
+        out.push(Finding {
+            level: ValidationLevel::Info,
+            message: "body contains shell code fences — these are stripped at load time \
+                      when `disable_skill_shell_execution` is on; prefer describing the \
+                      command in prose so the skill still works under that setting"
+                .to_string(),
+        });
+    }
+
+    out
+}
+
+/// Whether a string is kebab-case (lowercase ASCII letters, digits, '-').
+fn is_kebab_case(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+}
+
+/// Whether a body contains a fenced shell block.
+fn has_shell_fence(body: &str) -> bool {
+    body.lines().any(is_shell_fence)
+}
+
 /// Load a single skill file, parsing frontmatter and body.
 fn load_skill_file(path: &Path) -> Result<Skill, String> {
     let content = std::fs::read_to_string(path).map_err(|e| format!("Read error: {e}"))?;
@@ -773,5 +940,172 @@ mod tests {
         let text = "```rust\nfn main() {}\n```\n";
         let result = strip_shell_blocks(text);
         assert!(result.contains("fn main()"));
+    }
+
+    // ---- validate_skill_file ----
+
+    fn write_skill(dir: &std::path::Path, name: &str, contents: &str) -> std::path::PathBuf {
+        let path = dir.join(format!("{name}.md"));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn validate_clean_skill_has_no_findings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "my-skill",
+            "---\n\
+             description: Do a concrete thing\n\
+             whenToUse: when the user asks to do the thing\n\
+             userInvocable: true\n\
+             ---\n\
+             \n\
+             Do the thing. Steps:\n\
+             1. Read the input.\n\
+             2. Apply the operation.\n\
+             3. Report the result.\n\
+             \n\
+             Never bypass the verification gate.\n",
+        );
+        let findings = validate_skill_file(&path);
+        assert!(
+            findings.is_empty(),
+            "clean skill should have no findings, got: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn validate_flags_missing_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "no-desc",
+            "---\nuserInvocable: true\n---\n\n1. Do a thing.\n2. Then another thing.\n",
+        );
+        let findings = validate_skill_file(&path);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.level == ValidationLevel::Error && f.message.contains("description"))
+        );
+    }
+
+    #[test]
+    fn validate_flags_narrative_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "narrative",
+            "---\n\
+             description: Does a thing\n\
+             whenToUse: when asked\n\
+             userInvocable: true\n\
+             ---\n\
+             \n\
+             Let me read the file and apply the fix. I will run the tests afterward \
+             to confirm nothing broke.\n",
+        );
+        let findings = validate_skill_file(&path);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.level == ValidationLevel::Warning && f.message.contains("narrative"))
+        );
+    }
+
+    #[test]
+    fn validate_flags_missing_when_to_use_for_user_invocable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "no-when",
+            "---\n\
+             description: Does a concrete thing\n\
+             userInvocable: true\n\
+             ---\n\
+             \n\
+             Do the thing carefully and in order. Read input, apply op, report out.\n",
+        );
+        let findings = validate_skill_file(&path);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.level == ValidationLevel::Warning && f.message.contains("whenToUse"))
+        );
+    }
+
+    #[test]
+    fn validate_warns_on_non_kebab_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "MyBadName",
+            "---\n\
+             description: Does a thing\n\
+             userInvocable: false\n\
+             ---\n\
+             \n\
+             Do the thing carefully and in order. Read input, apply op, report out.\n",
+        );
+        let findings = validate_skill_file(&path);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.level == ValidationLevel::Warning && f.message.contains("kebab-case"))
+        );
+    }
+
+    #[test]
+    fn validate_accepts_skill_md_filename() {
+        // Directory-based skill layout: <dir>/SKILL.md is accepted regardless
+        // of case because the skill name comes from the directory.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "SKILL",
+            "---\n\
+             description: Does a thing\n\
+             whenToUse: when asked\n\
+             userInvocable: true\n\
+             ---\n\
+             \n\
+             Do the thing carefully and in order. Read input, apply op, report out.\n",
+        );
+        let findings = validate_skill_file(&path);
+        assert!(
+            !findings.iter().any(|f| f.message.contains("kebab-case")),
+            "SKILL.md should not trigger the kebab-case warning"
+        );
+    }
+
+    #[test]
+    fn validate_errors_on_malformed_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_skill(
+            dir.path(),
+            "broken",
+            "---\ndescription: open but not closed\n\nbody text here",
+        );
+        let findings = validate_skill_file(&path);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.level == ValidationLevel::Error && f.message.contains("frontmatter"))
+        );
+    }
+
+    #[test]
+    fn is_kebab_case_recognizes_good_and_bad() {
+        assert!(is_kebab_case("foo"));
+        assert!(is_kebab_case("foo-bar"));
+        assert!(is_kebab_case("foo-bar-2"));
+        assert!(!is_kebab_case(""));
+        assert!(!is_kebab_case("Foo"));
+        assert!(!is_kebab_case("foo_bar"));
+        assert!(!is_kebab_case("foo bar"));
+        assert!(!is_kebab_case("-foo"));
+        assert!(!is_kebab_case("foo-"));
     }
 }
