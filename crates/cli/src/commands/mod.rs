@@ -2229,6 +2229,10 @@ const HOOK_EVENT_CATALOG: &[(&str, &str)] = &[
         "post_compact",
         "after compaction finishes (context: messages_before/after, freed_tokens)",
     ),
+    (
+        "file_changed",
+        "after FileWrite / FileEdit / MultiEdit / NotebookEdit (context: tool, path, is_error)",
+    ),
     ("session_stop", "when the session ends"),
 ];
 
@@ -2264,6 +2268,7 @@ fn format_hook_event(event: &agent_code_lib::config::HookEvent) -> &'static str 
         HookEvent::PostTurn => "post_turn",
         HookEvent::PreCompact => "pre_compact",
         HookEvent::PostCompact => "post_compact",
+        HookEvent::FileChanged => "file_changed",
     }
 }
 
@@ -2283,6 +2288,7 @@ fn parse_hook_event(raw: &str) -> Option<agent_code_lib::config::HookEvent> {
         "post_turn" => HookEvent::PostTurn,
         "pre_compact" => HookEvent::PreCompact,
         "post_compact" => HookEvent::PostCompact,
+        "file_changed" => HookEvent::FileChanged,
         _ => return None,
     })
 }
@@ -5441,6 +5447,19 @@ mod tests {
         assert_eq!(
             parse_hook_event("post-compact"),
             Some(HookEvent::PostCompact)
+        );
+    }
+
+    #[test]
+    fn parse_hook_event_accepts_file_changed() {
+        use agent_code_lib::config::HookEvent;
+        assert_eq!(
+            parse_hook_event("file_changed"),
+            Some(HookEvent::FileChanged)
+        );
+        assert_eq!(
+            parse_hook_event("file-changed"),
+            Some(HookEvent::FileChanged)
         );
     }
 
