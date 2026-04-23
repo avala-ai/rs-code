@@ -468,6 +468,12 @@ pub const COMMANDS: &[Command] = &[
         description: "List keyboard shortcuts and the override file path",
         hidden: false,
     },
+    Command {
+        name: "tag",
+        aliases: &[],
+        description: "Tag the current session for filtering (list / add <tag> / --remove <tag>)",
+        hidden: false,
+    },
 ];
 
 /// Execute a slash command. Returns how to proceed.
@@ -705,9 +711,34 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             CommandResult::Handled
         }
         Some("sessions") => {
-            let sessions = agent_code_lib::services::session::list_sessions(10);
+            // Optional filter: /sessions --tag <tag>
+            let filter_tag = args
+                .and_then(|a| a.strip_prefix("--tag "))
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty());
+
+            let mut sessions = agent_code_lib::services::session::list_sessions(100);
+
+            if let Some(tag) = filter_tag {
+                let normalized = agent_code_lib::services::session::normalize_tag(tag);
+                match normalized {
+                    Ok(t) => sessions.retain(|s| s.tags.iter().any(|x| x == &t)),
+                    Err(e) => {
+                        eprintln!("Invalid tag: {e}");
+                        return CommandResult::Handled;
+                    }
+                }
+            }
+
+            // Display cap after filtering.
+            sessions.truncate(10);
+
             if sessions.is_empty() {
-                println!("No saved sessions.");
+                if filter_tag.is_some() {
+                    println!("No sessions match that tag.");
+                } else {
+                    println!("No saved sessions.");
+                }
             } else {
                 println!("Recent sessions:\n");
                 for s in &sessions {
@@ -716,12 +747,17 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                         .as_deref()
                         .map(|l| format!(" [{l}]"))
                         .unwrap_or_default();
+                    let tags = if s.tags.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" #{}", s.tags.join(" #"))
+                    };
                     println!(
-                        "  {}{label} — {} ({} turns, {} msgs, {})",
+                        "  {}{label}{tags} — {} ({} turns, {} msgs, {})",
                         s.id, s.cwd, s.turn_count, s.message_count, s.updated_at,
                     );
                 }
-                println!("\nUse /resume <id> to restore a session.");
+                println!("\nUse /resume <id> to restore, or /sessions --tag <tag> to filter.");
             }
             CommandResult::Handled
         }
@@ -1854,6 +1890,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
             }
             CommandResult::Handled
         }
+        Some("tag") => {
+            execute_tag(args, engine);
+            CommandResult::Handled
+        }
         Some("effort") => {
             let task = args.unwrap_or("").trim();
             let prompt = if task.is_empty() {
@@ -2855,9 +2895,6 @@ fn last_assistant_text(engine: &QueryEngine) -> Option<String> {
 /// return its name. Probes in order of least-surprise for the current
 /// platform. Returns `Err` if none succeeded.
 fn copy_to_clipboard(text: &str) -> Result<&'static str, String> {
-    // Platform-specific probe order. macOS always uses pbcopy; Windows
-    // uses `clip` which is present on all modern installs; Linux
-    // prefers Wayland when `WAYLAND_DISPLAY` is set, else X11.
     let candidates: &[(&'static str, &[&str])] = if cfg!(target_os = "macos") {
         &[("pbcopy", &[])]
     } else if cfg!(target_os = "windows") {
@@ -2893,7 +2930,6 @@ fn copy_to_clipboard(text: &str) -> Result<&'static str, String> {
                         let _ = child.wait();
                         continue;
                     }
-                    // Close stdin so the child can exit.
                     drop(stdin);
                 }
                 match child.wait() {
@@ -3130,6 +3166,85 @@ fn engine_tools(_engine: &QueryEngine) -> &agent_code_lib::tools::registry::Tool
     use std::sync::OnceLock;
     static REG: OnceLock<agent_code_lib::tools::registry::ToolRegistry> = OnceLock::new();
     REG.get_or_init(agent_code_lib::tools::registry::ToolRegistry::default_tools)
+}
+
+/// Execute the /tag command.
+///
+///   /tag                     list tags on the current session
+///   /tag <tag>               add a tag
+///   /tag --remove <tag>      remove a tag
+///   /tag --clear             remove all tags
+///
+/// Tags are lowercase, alphanumeric + `-`/`_`, max 32 chars.
+fn execute_tag(args: Option<&str>, engine: &QueryEngine) {
+    let session_id = engine.state().session_id.clone();
+    let raw = args.map(|s| s.trim()).unwrap_or("");
+
+    if raw.is_empty() {
+        // List current tags by reading the saved session.
+        match agent_code_lib::services::session::load_session(&session_id) {
+            Ok(data) => {
+                if data.tags.is_empty() {
+                    println!("No tags on the current session.");
+                    println!("Usage: /tag <tag>");
+                } else {
+                    println!("Tags: #{}", data.tags.join(" #"));
+                }
+            }
+            Err(_) => {
+                println!(
+                    "Current session has no saved file yet — send a turn first, \
+                     then /tag <tag>."
+                );
+            }
+        }
+        return;
+    }
+
+    if raw == "--clear" {
+        // Load, empty, save.
+        match agent_code_lib::services::session::load_session(&session_id) {
+            Ok(mut data) => {
+                let n = data.tags.len();
+                data.tags.clear();
+                // Use remove_session_tag API's underlying write path via one
+                // remove call per tag would be O(n²); simpler here:
+                let dir = dirs::config_dir()
+                    .map(|d| d.join("agent-code").join("sessions"))
+                    .expect("config dir");
+                let path = dir.join(format!("{}.json", data.id));
+                match serde_json::to_string_pretty(&data) {
+                    Ok(json) => {
+                        let masked = agent_code_lib::services::secret_masker::mask(&json);
+                        match std::fs::write(&path, masked) {
+                            Ok(()) => println!("Cleared {n} tag{}.", if n == 1 { "" } else { "s" }),
+                            Err(e) => eprintln!("Failed to clear tags: {e}"),
+                        }
+                    }
+                    Err(e) => eprintln!("Failed to serialize session: {e}"),
+                }
+            }
+            Err(e) => eprintln!("Failed to load session: {e}"),
+        }
+        return;
+    }
+
+    if let Some(rest) = raw.strip_prefix("--remove ") {
+        let target = rest.trim();
+        match agent_code_lib::services::session::remove_session_tag(&session_id, target) {
+            Ok(true) => println!("Removed tag: {target}"),
+            Ok(false) => println!("Not tagged: {target}"),
+            Err(e) => eprintln!("Failed to remove tag: {e}"),
+        }
+        return;
+    }
+
+    // Default: add tag.
+    match agent_code_lib::services::session::add_session_tag(&session_id, raw) {
+        Ok(true) => println!("Added tag: {raw}"),
+        Ok(false) => println!("Already tagged: {raw}"),
+        Err(e) => eprintln!("Failed to add tag: {e}"),
+    }
 }
 
 #[cfg(test)]
