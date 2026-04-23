@@ -169,6 +169,12 @@ pub const COMMANDS: &[Command] = &[
         hidden: false,
     },
     Command {
+        name: "copy",
+        aliases: &[],
+        description: "Copy the last assistant message to the system clipboard",
+        hidden: false,
+    },
+    Command {
         name: "branch",
         aliases: &[],
         description: "Show or switch git branch",
@@ -1052,6 +1058,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                     Err(e) => println!("Export failed: {e}"),
                 }
             }
+            CommandResult::Handled
+        }
+        Some("copy") => {
+            execute_copy(engine);
             CommandResult::Handled
         }
         Some("branch") => {
@@ -2736,6 +2746,117 @@ fn execute_skill_validate(target: &str) {
     }
 }
 
+/// Execute `/copy` — collect the text from the most recent assistant
+/// message and pipe it into the platform clipboard via a subprocess.
+fn execute_copy(engine: &QueryEngine) {
+    let Some(text) = last_assistant_text(engine) else {
+        println!("No assistant message to copy.");
+        return;
+    };
+
+    if text.is_empty() {
+        println!("Last assistant message has no text content to copy.");
+        return;
+    }
+
+    match copy_to_clipboard(&text) {
+        Ok(cmd) => println!("Copied {} byte(s) to clipboard (via {cmd}).", text.len()),
+        Err(e) => {
+            eprintln!("Failed to copy to clipboard: {e}");
+            eprintln!(
+                "Install one of: pbcopy (macOS), xclip or xsel (Linux X11), \
+                 wl-copy (Wayland), or clip (Windows)."
+            );
+        }
+    }
+}
+
+/// Extract the concatenated text content of the most recent
+/// assistant message. Returns `None` if the history contains no
+/// assistant messages yet.
+fn last_assistant_text(engine: &QueryEngine) -> Option<String> {
+    for msg in engine.state().messages.iter().rev() {
+        if let agent_code_lib::llm::message::Message::Assistant(a) = msg {
+            let text: String = a
+                .content
+                .iter()
+                .filter_map(|b| b.as_text())
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Some(text);
+        }
+    }
+    None
+}
+
+/// Pipe `text` into the first working platform clipboard command and
+/// return its name. Probes in order of least-surprise for the current
+/// platform. Returns `Err` if none succeeded.
+fn copy_to_clipboard(text: &str) -> Result<&'static str, String> {
+    // Platform-specific probe order. macOS always uses pbcopy; Windows
+    // uses `clip` which is present on all modern installs; Linux
+    // prefers Wayland when `WAYLAND_DISPLAY` is set, else X11.
+    let candidates: &[(&'static str, &[&str])] = if cfg!(target_os = "macos") {
+        &[("pbcopy", &[])]
+    } else if cfg!(target_os = "windows") {
+        &[("clip", &[])]
+    } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        &[
+            ("wl-copy", &[]),
+            ("xclip", &["-selection", "clipboard"]),
+            ("xsel", &["--clipboard", "--input"]),
+        ]
+    } else {
+        &[
+            ("xclip", &["-selection", "clipboard"]),
+            ("xsel", &["--clipboard", "--input"]),
+            ("wl-copy", &[]),
+        ]
+    };
+
+    let mut last_err: Option<String> = None;
+    for (cmd, args) in candidates {
+        match std::process::Command::new(cmd)
+            .args(*args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                use std::io::Write;
+                if let Some(mut stdin) = child.stdin.take() {
+                    if let Err(e) = stdin.write_all(text.as_bytes()) {
+                        last_err = Some(format!("{cmd}: write error: {e}"));
+                        let _ = child.wait();
+                        continue;
+                    }
+                    // Close stdin so the child can exit.
+                    drop(stdin);
+                }
+                match child.wait() {
+                    Ok(status) if status.success() => return Ok(cmd),
+                    Ok(status) => {
+                        last_err = Some(format!("{cmd} exited with {status}"));
+                        continue;
+                    }
+                    Err(e) => {
+                        last_err = Some(format!("{cmd}: wait error: {e}"));
+                        continue;
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                last_err = Some(format!("{cmd}: {e}"));
+                continue;
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| "no clipboard command available on this platform".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2905,5 +3026,26 @@ mod tests {
         assert_eq!(mask_secret("x"), "(1 chars, masked)");
         assert_eq!(mask_secret("abc"), "(3 chars, masked)");
         assert_eq!(mask_secret(""), "(empty)");
+    }
+
+    #[test]
+    fn copy_to_clipboard_errors_with_empty_path() {
+        // Force `copy_to_clipboard` to have no candidates on PATH by
+        // temporarily emptying PATH. This verifies the error path
+        // returns a helpful string instead of silently succeeding.
+        //
+        // SAFETY: single-threaded test, restored before exit.
+        let prev = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", "");
+        }
+        let result = copy_to_clipboard("hello");
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("PATH", v),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        assert!(result.is_err(), "expected error on empty PATH");
     }
 }
