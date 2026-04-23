@@ -105,7 +105,10 @@ pub struct HookResult {
     pub output: String,
 }
 
-#[cfg(test)]
+// Shell hooks dispatch via `bash -c`, which isn't available on Windows
+// without WSL. Gate the tests on unix so the Windows CI job doesn't try
+// to spawn a subprocess that fails with a WSL install-distribution error.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::config::{HookAction, HookDefinition, HookEvent};
