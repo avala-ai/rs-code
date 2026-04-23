@@ -3983,6 +3983,10 @@ fn execute_session_picker(engine: &mut QueryEngine) {
 mod tests {
     use super::*;
 
+    // Serialize tests that mutate the global VISUAL/EDITOR env vars so
+    // parallel test execution on Windows doesn't see each other's writes.
+    static EDITOR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn slugify_basic() {
         assert_eq!(slugify_note("Hello World"), "hello-world");
@@ -4257,7 +4261,7 @@ mod tests {
 
     #[test]
     fn resolve_editor_prefers_visual() {
-        // SAFETY: single-threaded test, restored before exit.
+        let _guard = EDITOR_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev_visual = std::env::var_os("VISUAL");
         let prev_editor = std::env::var_os("EDITOR");
         unsafe {
@@ -4280,6 +4284,7 @@ mod tests {
 
     #[test]
     fn resolve_editor_falls_back_to_editor_env() {
+        let _guard = EDITOR_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev_visual = std::env::var_os("VISUAL");
         let prev_editor = std::env::var_os("EDITOR");
         unsafe {
@@ -4302,6 +4307,7 @@ mod tests {
 
     #[test]
     fn resolve_editor_ignores_empty_env() {
+        let _guard = EDITOR_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let prev_visual = std::env::var_os("VISUAL");
         let prev_editor = std::env::var_os("EDITOR");
         unsafe {
