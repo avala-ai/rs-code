@@ -396,6 +396,14 @@ pub enum HookEvent {
     /// estimate diverges from reality or when the compactor decides to
     /// no-op because there was nothing to free.
     PostCompact,
+    /// Fired after any file-mutating tool (`FileWrite`, `FileEdit`,
+    /// `MultiEdit`, `NotebookEdit`) completes. Consolidates what would
+    /// otherwise be four `PostToolUse` hook configs into one. Context
+    /// carries the absolute `path`, the `tool` name that mutated it,
+    /// and whether the write ended in error (`is_error`). Audit logs,
+    /// pre-commit gates, and backup pipelines can listen here without
+    /// having to enumerate every file-editing tool.
+    FileChanged,
 }
 
 /// A configured hook action.
@@ -682,6 +690,14 @@ mod tests {
         assert_eq!(json, "\"post_compact\"");
         let back: HookEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(back, HookEvent::PostCompact);
+    }
+
+    #[test]
+    fn hook_event_serde_roundtrip_file_changed() {
+        let json = serde_json::to_string(&HookEvent::FileChanged).unwrap();
+        assert_eq!(json, "\"file_changed\"");
+        let back: HookEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, HookEvent::FileChanged);
     }
 
     // ---- HookAction serde round-trip ----

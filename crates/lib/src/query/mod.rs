@@ -146,6 +146,27 @@ impl QueryEngine {
         &mut self.state
     }
 
+    /// Run any configured `FileChanged` hooks when a file-mutating tool
+    /// (`FileWrite`, `FileEdit`, `MultiEdit`, `NotebookEdit`) completes.
+    /// Consolidates what would otherwise be four separate `PostToolUse`
+    /// hook configs. Context carries the path, the tool name, and
+    /// whether the write ended in error.
+    pub async fn fire_file_changed_hooks(
+        &self,
+        tool: &str,
+        path: &str,
+        is_error: bool,
+    ) -> Vec<crate::hooks::HookResult> {
+        let ctx = serde_json::json!({
+            "tool": tool,
+            "path": path,
+            "is_error": is_error,
+        });
+        self.hooks
+            .run_hooks(&HookEvent::FileChanged, None, &ctx)
+            .await
+    }
+
     /// Run any configured `PreCompact` hooks, passing a JSON context
     /// describing the conversation about to be compacted (message count
     /// and an estimate of tokens freed). Returns the per-hook results so
@@ -942,6 +963,20 @@ impl QueryEngine {
                     )
                     .await;
 
+                // FileChanged fires for file-mutating tools as a
+                // consolidated signal so audit / backup / pre-commit
+                // hooks don't have to enumerate every file-editing
+                // tool via PostToolUse filters. Path comes from the
+                // original tool call input's `file_path` field —
+                // every file-mutating tool's schema uses that key.
+                if is_file_mutating_tool(&result.tool_name)
+                    && let Some(path) = extract_file_path(&tool_calls, &result.tool_use_id)
+                {
+                    let _ = self
+                        .fire_file_changed_hooks(&result.tool_name, &path, result.result.is_error)
+                        .await;
+                }
+
                 let msg = tool_result_message(
                     &result.tool_use_id,
                     &result.result.content,
@@ -971,6 +1006,35 @@ impl QueryEngine {
 }
 
 /// Get a fallback model (smaller/cheaper) for retry on overload.
+/// Tool names whose `PostToolUse` should also fire a `FileChanged`
+/// event. Keep this list in sync with the `file_path`-input-shape
+/// tools in `crates/lib/src/tools/`.
+const FILE_MUTATING_TOOLS: &[&str] = &["FileWrite", "FileEdit", "MultiEdit", "NotebookEdit"];
+
+/// Whether a tool name indicates a file mutation that should fire
+/// `FileChanged`. Pure so tests can probe without an engine.
+fn is_file_mutating_tool(name: &str) -> bool {
+    FILE_MUTATING_TOOLS.contains(&name)
+}
+
+/// Look up a tool call by its use-id and return the `file_path` input
+/// value if present. Returns None when the id doesn't match or the
+/// input isn't a JSON object with a string `file_path` (shouldn't
+/// happen for file-mutating tools since their input schemas require
+/// it, but be defensive — agents produce garbage sometimes).
+fn extract_file_path(
+    tool_calls: &[crate::tools::executor::PendingToolCall],
+    use_id: &str,
+) -> Option<String> {
+    tool_calls
+        .iter()
+        .find(|c| c.id == use_id)?
+        .input
+        .get("file_path")?
+        .as_str()
+        .map(str::to_string)
+}
+
 fn get_fallback_model(current: &str) -> String {
     let lower = current.to_lowercase();
     if lower.contains("opus") {
@@ -1304,6 +1368,68 @@ pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- FileChanged helpers ----
+
+    #[test]
+    fn is_file_mutating_tool_covers_every_file_tool() {
+        assert!(is_file_mutating_tool("FileWrite"));
+        assert!(is_file_mutating_tool("FileEdit"));
+        assert!(is_file_mutating_tool("MultiEdit"));
+        assert!(is_file_mutating_tool("NotebookEdit"));
+    }
+
+    #[test]
+    fn is_file_mutating_tool_rejects_read_and_non_file_tools() {
+        assert!(!is_file_mutating_tool("FileRead"));
+        assert!(!is_file_mutating_tool("Bash"));
+        assert!(!is_file_mutating_tool("Glob"));
+        assert!(!is_file_mutating_tool(""));
+    }
+
+    #[test]
+    fn extract_file_path_finds_matching_call() {
+        let calls = vec![crate::tools::executor::PendingToolCall {
+            id: "t1".into(),
+            name: "FileWrite".into(),
+            input: serde_json::json!({"file_path": "/tmp/foo.rs", "content": "..."}),
+        }];
+        assert_eq!(
+            extract_file_path(&calls, "t1").as_deref(),
+            Some("/tmp/foo.rs")
+        );
+    }
+
+    #[test]
+    fn extract_file_path_returns_none_on_unknown_id() {
+        let calls = vec![crate::tools::executor::PendingToolCall {
+            id: "t1".into(),
+            name: "FileWrite".into(),
+            input: serde_json::json!({"file_path": "/tmp/foo.rs", "content": "..."}),
+        }];
+        assert!(extract_file_path(&calls, "nope").is_none());
+    }
+
+    #[test]
+    fn extract_file_path_returns_none_when_input_lacks_path() {
+        // Defensive — an agent-generated bad input shouldn't crash the loop.
+        let calls = vec![crate::tools::executor::PendingToolCall {
+            id: "t1".into(),
+            name: "FileWrite".into(),
+            input: serde_json::json!({"content": "..."}),
+        }];
+        assert!(extract_file_path(&calls, "t1").is_none());
+    }
+
+    #[test]
+    fn extract_file_path_returns_none_when_path_is_not_a_string() {
+        let calls = vec![crate::tools::executor::PendingToolCall {
+            id: "t1".into(),
+            name: "FileWrite".into(),
+            input: serde_json::json!({"file_path": 42}),
+        }];
+        assert!(extract_file_path(&calls, "t1").is_none());
+    }
 
     /// System prompt omits the additional-dirs block when none are tracked.
     #[test]

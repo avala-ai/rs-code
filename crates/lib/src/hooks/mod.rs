@@ -10,6 +10,7 @@
 //! - `UserPromptSubmit` — when the user submits input
 //! - `PreCompact` — before /compact or auto-compact mutates history
 //! - `PostCompact` — after compaction finishes with the actual outcome
+//! - `FileChanged` — after any file-mutating tool completes
 //!
 //! Hooks can be shell commands, HTTP endpoints, or prompt templates,
 //! configured in the settings file.
@@ -177,6 +178,12 @@ mod tests {
     async fn run_hooks_fires_post_compact() {
         let body = run_and_read(HookEvent::PostCompact).await;
         assert!(body.contains("fired"), "PostCompact hook did not run");
+    }
+
+    #[tokio::test]
+    async fn run_hooks_fires_file_changed() {
+        let body = run_and_read(HookEvent::FileChanged).await;
+        assert!(body.contains("fired"), "FileChanged hook did not run");
     }
 
     /// Registering a hook for one event must NOT cause it to fire when
