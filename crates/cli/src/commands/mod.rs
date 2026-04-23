@@ -540,6 +540,12 @@ pub const COMMANDS: &[Command] = &[
         description: "Resubmit the most recent user prompt as a new turn",
         hidden: false,
     },
+    Command {
+        name: "search",
+        aliases: &["find"],
+        description: "Grep the current session for a substring (try /search error)",
+        hidden: false,
+    },
 ];
 
 /// Execute a slash command. Returns how to proceed.
@@ -2080,6 +2086,10 @@ pub fn execute(input: &str, engine: &mut QueryEngine) -> CommandResult {
                 CommandResult::Handled
             }
         },
+        Some("search") | Some("find") => {
+            execute_search(args, engine);
+            CommandResult::Handled
+        }
         Some("install-github-app") => {
             let prompt = "Walk the user through setting up the `gh` CLI so the PR-related \
                  slash commands (/pr-comments, /autofix-pr, /issue) have what \
@@ -4025,6 +4035,129 @@ fn last_user_prompt(messages: &[agent_code_lib::llm::message::Message]) -> Optio
     None
 }
 
+// ---------------------------------------------------------------------------
+// /search — grep the current session for a substring
+// ---------------------------------------------------------------------------
+
+/// How the rendered match row labels a message's origin.
+fn message_tag(msg: &agent_code_lib::llm::message::Message) -> &'static str {
+    use agent_code_lib::llm::message::Message;
+    match msg {
+        Message::User(u) if u.is_meta => "tool",
+        Message::User(_) => "user",
+        Message::Assistant(_) => "asst",
+        Message::System(_) => "sys ",
+    }
+}
+
+/// Flatten every text-bearing content block in a message into a single
+/// string. Tool-result content, text blocks, and thinking blocks all
+/// participate so `/search` matches anywhere the word appeared.
+fn message_searchable_text(msg: &agent_code_lib::llm::message::Message) -> String {
+    use agent_code_lib::llm::message::{ContentBlock, Message};
+    let mut out = String::new();
+    let blocks: &[ContentBlock] = match msg {
+        Message::User(u) => &u.content,
+        Message::Assistant(a) => &a.content,
+        Message::System(s) => {
+            out.push_str(&s.content);
+            return out;
+        }
+    };
+    for b in blocks {
+        match b {
+            ContentBlock::Text { text } => {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(text);
+            }
+            ContentBlock::Thinking { thinking, .. } => {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(thinking);
+            }
+            ContentBlock::ToolResult { content, .. } => {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(content);
+            }
+            ContentBlock::ToolUse { name, input, .. } => {
+                // Allow searching tool names + arg JSON so users can find
+                // "Bash ls -la" style moments.
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(name);
+                out.push(' ');
+                out.push_str(&input.to_string());
+            }
+            ContentBlock::Image { .. } | ContentBlock::Document { .. } => {}
+        }
+    }
+    out
+}
+
+/// Build a context snippet around the first match in `haystack`. Returns
+/// `None` if the substring isn't present. The comparison is
+/// case-insensitive, character-boundary aware, and the snippet includes
+/// ~40 chars of context on each side.
+fn snippet_around_match(haystack: &str, needle: &str, ctx: usize) -> Option<String> {
+    if needle.is_empty() {
+        return None;
+    }
+    let hay_lower = haystack.to_lowercase();
+    let needle_lower = needle.to_lowercase();
+    let byte_pos = hay_lower.find(&needle_lower)?;
+    // Convert byte position to char position so we can take/skip by char.
+    let char_start = haystack[..byte_pos].chars().count();
+    let needle_char_len = needle_lower.chars().count();
+
+    let all_chars: Vec<char> = haystack.chars().collect();
+    let start = char_start.saturating_sub(ctx);
+    let end = (char_start + needle_char_len + ctx).min(all_chars.len());
+    let prefix = if start > 0 { "…" } else { "" };
+    let suffix = if end < all_chars.len() { "…" } else { "" };
+    let body: String = all_chars[start..end].iter().collect();
+    // Collapse whitespace so the snippet reads as a one-liner.
+    let collapsed: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    Some(format!("{prefix}{collapsed}{suffix}"))
+}
+
+fn execute_search(args: Option<&str>, engine: &QueryEngine) {
+    let query = args.map(str::trim).unwrap_or("");
+    if query.is_empty() {
+        println!("Usage: /search <substring>");
+        return;
+    }
+    let messages = &engine.state().messages;
+    let mut hits = 0usize;
+    let max_hits = 20;
+    let query_lower = query.to_lowercase();
+
+    for (i, msg) in messages.iter().enumerate() {
+        let text = message_searchable_text(msg);
+        if text.to_lowercase().contains(&query_lower) {
+            if hits == max_hits {
+                println!("... stopping after {max_hits} hits (scroll back or refine the query).");
+                return;
+            }
+            let snippet =
+                snippet_around_match(&text, query, 40).unwrap_or_else(|| "(match)".to_string());
+            println!("  #{i:>3} [{}] {snippet}", message_tag(msg));
+            hits += 1;
+        }
+    }
+
+    if hits == 0 {
+        println!("No matches for {query:?} in the current session.");
+    } else {
+        println!("\n{hits} match(es) for {query:?}.");
+    }
+}
+
 /// Pick an editor. Returns the binary name/path to spawn.
 fn resolve_editor() -> Option<String> {
     if let Ok(v) = std::env::var("VISUAL")
@@ -5414,5 +5547,72 @@ mod tests {
             last_user_prompt(&[msg]).as_deref(),
             Some("first line\nsecond line")
         );
+    }
+
+    // ---- /search helpers ----
+
+    #[test]
+    fn snippet_around_match_includes_ellipses_when_trimmed() {
+        let hay = "prefix ".repeat(20) + "NEEDLE" + &" suffix".repeat(20);
+        let snip = snippet_around_match(&hay, "NEEDLE", 10).unwrap();
+        assert!(snip.starts_with('…'));
+        assert!(snip.ends_with('…'));
+        assert!(snip.to_lowercase().contains("needle"));
+    }
+
+    #[test]
+    fn snippet_around_match_is_case_insensitive() {
+        let snip = snippet_around_match("Hello World", "WORLD", 100).unwrap();
+        assert!(snip.to_lowercase().contains("world"));
+    }
+
+    #[test]
+    fn snippet_around_match_returns_none_for_absent_needle() {
+        assert!(snippet_around_match("abc def", "xyz", 10).is_none());
+    }
+
+    #[test]
+    fn snippet_around_match_handles_multibyte_boundaries() {
+        // The needle lives just past a multi-byte glyph. Byte offset ≠ char
+        // offset — if we accidentally slice at a byte boundary this panics.
+        let hay = "café 🌮 pick this up now";
+        let snip = snippet_around_match(hay, "pick", 10).unwrap();
+        assert!(snip.contains("pick"));
+    }
+
+    #[test]
+    fn snippet_around_match_empty_needle_yields_none() {
+        assert!(snippet_around_match("anything", "", 10).is_none());
+    }
+
+    #[test]
+    fn message_searchable_text_covers_tool_use_and_result() {
+        let asst =
+            test_assistant_with_tool_use("t1", "Read", serde_json::json!({"path": "src/main.rs"}));
+        let text = message_searchable_text(&asst);
+        assert!(text.contains("Read"));
+        assert!(text.contains("src/main.rs"));
+
+        let user = test_user_with_tool_result("t1", "fn main() {}", false);
+        let text = message_searchable_text(&user);
+        assert!(text.contains("fn main()"));
+    }
+
+    #[test]
+    fn message_tag_labels_each_variant() {
+        use agent_code_lib::llm::message::{ContentBlock, Message, UserMessage};
+        use uuid::Uuid;
+        let user = Message::User(UserMessage {
+            uuid: Uuid::new_v4(),
+            timestamp: "0".into(),
+            content: vec![ContentBlock::Text { text: "hi".into() }],
+            is_meta: false,
+            is_compact_summary: false,
+        });
+        assert_eq!(message_tag(&user), "user");
+        let tool = test_user_with_tool_result("t1", "ok", false);
+        assert_eq!(message_tag(&tool), "tool");
+        let asst = test_assistant_with_tool_use("t2", "Bash", serde_json::json!({}));
+        assert_eq!(message_tag(&asst), "asst");
     }
 }
