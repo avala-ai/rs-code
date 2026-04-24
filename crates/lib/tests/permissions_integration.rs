@@ -22,6 +22,8 @@ fn checker_with_mode(mode: PermissionMode) -> PermissionChecker {
     PermissionChecker::from_config(&PermissionsConfig {
         default_mode: mode,
         rules: Vec::new(),
+        allowed_tools: Vec::new(),
+        disallowed_tools: Vec::new(),
     })
 }
 
@@ -183,6 +185,8 @@ fn specific_rule_overrides_default_mode() {
             pattern: Some("git *".into()),
             action: PermissionMode::Allow,
         }],
+        allowed_tools: Vec::new(),
+        disallowed_tools: Vec::new(),
     });
 
     // Git commands allowed by rule.
@@ -220,6 +224,8 @@ fn glob_pattern_matching_git_star() {
             pattern: Some("git *".into()),
             action: PermissionMode::Allow,
         }],
+        allowed_tools: Vec::new(),
+        disallowed_tools: Vec::new(),
     });
 
     assert!(matches!(
@@ -242,6 +248,8 @@ fn glob_pattern_matching_rs_files() {
             pattern: Some("*.rs".into()),
             action: PermissionMode::Allow,
         }],
+        allowed_tools: Vec::new(),
+        disallowed_tools: Vec::new(),
     });
 
     assert!(matches!(
@@ -276,6 +284,8 @@ fn first_matching_rule_wins() {
                 action: PermissionMode::Deny,
             },
         ],
+        allowed_tools: Vec::new(),
+        disallowed_tools: Vec::new(),
     });
 
     // git commands match rule 0 first -> Allow.
@@ -324,6 +334,8 @@ fn mixed_rules_different_tools() {
                 action: PermissionMode::Allow,
             },
         ],
+        allowed_tools: Vec::new(),
+        disallowed_tools: Vec::new(),
     });
 
     // Bash + git -> Allow.
@@ -362,6 +374,8 @@ fn wildcard_tool_rule_matches_all_tools() {
             pattern: None,
             action: PermissionMode::Allow,
         }],
+        allowed_tools: Vec::new(),
+        disallowed_tools: Vec::new(),
     });
 
     assert!(matches!(
