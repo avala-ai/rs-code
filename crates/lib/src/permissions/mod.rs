@@ -283,6 +283,8 @@ mod tests {
                     action: PermissionMode::Deny,
                 },
             ],
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
         });
 
         assert!(matches!(
@@ -304,6 +306,8 @@ mod tests {
         let checker = PermissionChecker::from_config(&PermissionsConfig {
             default_mode: PermissionMode::Deny,
             rules: vec![],
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
         });
         assert!(matches!(
             checker.check("Bash", &serde_json::json!({"command": "ls"})),
@@ -323,6 +327,8 @@ mod tests {
         let checker = PermissionChecker::from_config(&PermissionsConfig {
             default_mode: PermissionMode::Plan,
             rules: vec![],
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
         });
         let decision = checker.check("Bash", &serde_json::json!({"command": "ls"}));
         assert!(matches!(decision, PermissionDecision::Deny(_)));
@@ -336,6 +342,8 @@ mod tests {
         let checker = PermissionChecker::from_config(&PermissionsConfig {
             default_mode: PermissionMode::AcceptEdits,
             rules: vec![],
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
         });
         // Write to a non-protected path should be allowed.
         assert!(matches!(
@@ -353,6 +361,8 @@ mod tests {
                 pattern: None,
                 action: PermissionMode::Allow,
             }],
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
         });
         assert!(matches!(
             checker.check("Bash", &serde_json::json!({"command": "ls"})),
@@ -369,6 +379,8 @@ mod tests {
         let checker = PermissionChecker::from_config(&PermissionsConfig {
             default_mode: PermissionMode::Deny,
             rules: vec![],
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
         });
         // check_read should allow even when default mode is Deny (no explicit deny rule).
         assert!(matches!(
@@ -386,6 +398,8 @@ mod tests {
                 pattern: Some("*.secret".into()),
                 action: PermissionMode::Deny,
             }],
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
         });
         assert!(matches!(
             checker.check_read("FileRead", &serde_json::json!({"file_path": "keys.secret"})),

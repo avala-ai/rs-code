@@ -518,6 +518,15 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let mut tool_registry = ToolRegistry::default_tools();
+    // Install the schema-level visibility filter so tools the user
+    // listed in `permissions.disallowed_tools` never reach the model.
+    // Applies to built-ins and, after MCP discovery below, to MCP
+    // proxy tools too — the registry re-filters on each schemas()
+    // call so there's no ordering dependency.
+    tool_registry.set_visibility(agent_code_lib::tools::registry::ToolVisibilityFilter::new(
+        config.permissions.allowed_tools.clone(),
+        config.permissions.disallowed_tools.clone(),
+    ));
     let permission_checker = PermissionChecker::from_config(&config.permissions);
     let app_state = AppState::new(config.clone());
 

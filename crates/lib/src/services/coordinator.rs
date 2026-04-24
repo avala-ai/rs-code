@@ -354,6 +354,8 @@ fn build_permissions_config(
     Some(PermissionsConfig {
         default_mode: mode.unwrap_or(PermissionMode::Ask),
         rules,
+        allowed_tools: Vec::new(),
+        disallowed_tools: Vec::new(),
     })
 }
 
@@ -1012,6 +1014,8 @@ mod coordinator_tests {
                     action: PermissionMode::Allow,
                 },
             ],
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
         };
         let s = permissions_to_toml(&perms).unwrap();
         assert!(s.contains("[permissions]"));

@@ -279,6 +279,24 @@ pub struct PermissionsConfig {
     pub default_mode: PermissionMode,
     /// Per-tool permission rules.
     pub rules: Vec<PermissionRule>,
+    /// Tool-visibility allowlist. When non-empty, ONLY tools whose
+    /// names match an entry are exposed to the model in the schema.
+    /// Applies at schema-send time, so the model never sees a tool
+    /// that isn't on the list — saves context tokens and prevents
+    /// the model from even considering restricted tools.
+    ///
+    /// Distinct from `rules`, which gates authorization at call
+    /// time. Use this when a tool's *existence* should be hidden;
+    /// use `rules` when the tool should be callable but gated on
+    /// its input.
+    ///
+    /// Supports `*` as a trailing wildcard (e.g. `"mcp__*"` matches
+    /// every MCP-namespaced tool). An empty vec means "no allowlist".
+    pub allowed_tools: Vec<String>,
+    /// Tool-visibility denylist. Tools whose names match an entry
+    /// are hidden from the model's schema even if `allowed_tools`
+    /// would otherwise include them. Deny wins over allow.
+    pub disallowed_tools: Vec<String>,
 }
 
 impl Default for PermissionsConfig {
@@ -286,6 +304,8 @@ impl Default for PermissionsConfig {
         Self {
             default_mode: PermissionMode::Ask,
             rules: Vec::new(),
+            allowed_tools: Vec::new(),
+            disallowed_tools: Vec::new(),
         }
     }
 }
