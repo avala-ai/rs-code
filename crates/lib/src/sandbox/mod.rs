@@ -283,8 +283,16 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
-    fn auto_detect_off_macos_is_noop() {
+    #[cfg(target_os = "windows")]
+    fn auto_detect_on_windows_is_noop() {
+        // No sandbox strategy is registered for Windows today. macOS has
+        // its own dedicated test below, and Linux has the bwrap-or-noop
+        // test further down — both are platforms where `auto_detect`
+        // picks an actual strategy when one is available. This probe was
+        // previously gated on `not(target_os = "macos")`, which let it
+        // run on Linux dev machines that have `bwrap` installed and then
+        // fail with "bwrap != noop" — a false positive that didn't
+        // reflect a real regression.
         assert_eq!(auto_detect().name(), "noop");
     }
 
