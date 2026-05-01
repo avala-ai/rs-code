@@ -4192,63 +4192,82 @@ fn execute_rules(args: Option<&str>, _engine: &mut QueryEngine) {
 
 /// Execute `/output-style [name]`.
 ///
-/// Without an argument, lists the available styles and the currently
-/// active one. With a name, switches to that style and prints a
-/// confirmation. Unknown names print usage.
+/// Without an argument, lists the available styles (built-in plus any
+/// loaded from `<project>/.agent/output-styles/` or
+/// `~/.config/agent-code/output-styles/`) and marks the active one.
+/// With a name, switches to that style and prints a confirmation.
+/// Unknown names print usage.
 fn execute_output_style(args: Option<&str>, engine: &mut QueryEngine) {
     let raw = args.map(|s| s.trim()).unwrap_or("");
 
+    let cwd = std::path::PathBuf::from(&engine.state().cwd);
+    let registry = agent_code_lib::output_styles::OutputStyleRegistry::load_all(Some(&cwd));
+
     if raw.is_empty() {
-        let current = engine.state().response_style;
+        let active_name = engine.state().active_output_style_name().to_string();
+
         println!("Available response styles:");
-        println!(
-            "  default       — no override{}",
-            if current == agent_code_lib::state::ResponseStyle::Default {
+        // Sort: built-ins first (in canonical order), then disk styles
+        // alphabetically. Within each group we keep the registry's
+        // declared order so authors can predict the listing.
+        let mut entries: Vec<&agent_code_lib::output_styles::OutputStyle> =
+            registry.all().iter().collect();
+        entries.sort_by_key(|s| {
+            let group = match s.source {
+                agent_code_lib::output_styles::OutputStyleSource::BuiltIn => 0,
+                agent_code_lib::output_styles::OutputStyleSource::Project => 1,
+                agent_code_lib::output_styles::OutputStyleSource::User => 2,
+            };
+            (group, s.name.clone())
+        });
+
+        for style in entries {
+            let active = if style.name == active_name {
                 "  (active)"
             } else {
                 ""
-            }
-        );
-        println!(
-            "  concise       — shorter responses, fewer qualifiers{}",
-            if current == agent_code_lib::state::ResponseStyle::Concise {
-                "  (active)"
-            } else {
-                ""
-            }
-        );
-        println!(
-            "  explanatory   — explain reasoning and trade-offs{}",
-            if current == agent_code_lib::state::ResponseStyle::Explanatory {
-                "  (active)"
-            } else {
-                ""
-            }
-        );
-        println!(
-            "  learning      — narrate steps for new-to-codebase users{}",
-            if current == agent_code_lib::state::ResponseStyle::Learning {
-                "  (active)"
-            } else {
-                ""
-            }
-        );
+            };
+            println!(
+                "  {:<14} ({}) — {}{}",
+                style.name,
+                style.source.label(),
+                style.description,
+                active
+            );
+        }
         println!();
         println!("Usage: /output-style <name>   (alias: /style)");
+        println!(
+            "Drop markdown files in .agent/output-styles/ or \
+             ~/.config/agent-code/output-styles/ to add your own."
+        );
         return;
     }
 
-    let Some(new_style) = agent_code_lib::state::ResponseStyle::from_name(raw) else {
-        eprintln!("Unknown style: {raw}");
-        println!("Valid names: default, concise, explanatory, learning.");
-        println!("Run /output-style with no argument to see details.");
+    // Try built-ins first. ResponseStyle::from_name handles aliases
+    // (off, terse, explain, teach) that the disk registry would not.
+    if let Some(new_style) = agent_code_lib::state::ResponseStyle::from_name(raw) {
+        engine.state_mut().response_style = new_style;
+        // Picking a built-in clears any active disk override.
+        engine.state_mut().disk_output_style = None;
+        println!("Response style set to '{}'.", new_style.name());
         return;
-    };
+    }
 
-    engine.state_mut().response_style = new_style;
-    // The prompt-hash calculation includes `response_style`, so the
-    // cache invalidates automatically on the next turn.
-    println!("Response style set to '{}'.", new_style.name());
+    // Fall through to disk styles (case-sensitive — ids come from
+    // user-controlled files, not free-form input).
+    if let Some(style) = registry.find(raw) {
+        let chosen = style.clone();
+        let display_name = chosen.name.clone();
+        let label = chosen.source.label();
+        engine.state_mut().response_style = agent_code_lib::state::ResponseStyle::Default;
+        engine.state_mut().disk_output_style = Some(chosen);
+        println!("Response style set to '{display_name}' ({label}).");
+        return;
+    }
+
+    eprintln!("Unknown style: {raw}");
+    println!("Run /output-style with no argument to see all available styles.");
 }
 
 /// Execute `/reload` — rescan on-disk extensions and invalidate the

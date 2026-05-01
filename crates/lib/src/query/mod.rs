@@ -660,6 +660,15 @@ impl QueryEngine {
                 // the style change would only take effect on the
                 // next "real" cache bust (e.g. cwd or model change).
                 (self.state.response_style as u8).hash(&mut h);
+                // Disk-loaded styles override the built-in voice; hash
+                // the active style id (or an empty string) so swapping
+                // between disk styles also busts the prompt cache.
+                self.state
+                    .disk_output_style
+                    .as_ref()
+                    .map(|s| s.name.as_str())
+                    .unwrap_or("")
+                    .hash(&mut h);
                 h.finish()
             };
             let system_prompt = if let Some((cached_hash, ref cached)) = self.cached_system_prompt
@@ -1369,7 +1378,10 @@ pub fn build_system_prompt(tools: &ToolRegistry, state: &AppState) -> String {
         // voice instructions stay salient across long contexts. Uses a
         // distinct heading from the static `# Response style` guideline
         // block lower down so they don't collide in tests or docs.
-        let style_fragment = state.response_style.prompt_fragment();
+        // Disk-loaded output styles win over the built-in
+        // `response_style` so a user-defined preset can fully replace
+        // the canned voice without losing the section structure.
+        let style_fragment = state.active_output_style_fragment();
         if !style_fragment.is_empty() {
             prompt.push_str("# Active response style\n\n");
             prompt.push_str(style_fragment);

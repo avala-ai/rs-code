@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use crate::config::Config;
 use crate::llm::message::{Message, Usage};
+use crate::output_styles::OutputStyle;
 
 /// Preset response styles selectable via `/output-style`.
 ///
@@ -118,6 +119,11 @@ pub struct AppState {
     /// Selected response style. `/output-style <name>` flips it.
     /// `Default` emits no prompt override. Session-local.
     pub response_style: ResponseStyle,
+    /// When set, a disk-loaded output style is active and takes
+    /// precedence over `response_style` for system-prompt rendering.
+    /// `/output-style <name>` populates this when the chosen id maps
+    /// to a disk style; choosing a built-in clears it.
+    pub disk_output_style: Option<OutputStyle>,
     /// Saved `config.api.model` before `/fast` swapped in the fast
     /// alternative. `Some` ⇔ currently in fast mode. Restored on the
     /// next `/fast` toggle. Session-local — not persisted.
@@ -146,6 +152,7 @@ impl AppState {
             additional_dirs: Vec::new(),
             brief_mode: false,
             response_style: ResponseStyle::default(),
+            disk_output_style: None,
             pre_fast_model: None,
         }
     }
@@ -168,6 +175,27 @@ impl AppState {
     /// Get the conversation history.
     pub fn history(&self) -> &[Message] {
         &self.messages
+    }
+
+    /// Effective prompt fragment for the active output style.
+    ///
+    /// A disk-loaded style (set via `/output-style <name>` when the
+    /// id resolves to a disk file) wins over the built-in
+    /// `response_style`. Returns an empty string when neither
+    /// contributes a fragment.
+    pub fn active_output_style_fragment(&self) -> &str {
+        if let Some(style) = &self.disk_output_style {
+            return style.body.as_str();
+        }
+        self.response_style.prompt_fragment()
+    }
+
+    /// Display name of the active output style.
+    pub fn active_output_style_name(&self) -> &str {
+        if let Some(style) = &self.disk_output_style {
+            return style.name.as_str();
+        }
+        self.response_style.name()
     }
 }
 
