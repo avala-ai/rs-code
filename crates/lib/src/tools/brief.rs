@@ -110,6 +110,15 @@ impl Tool for BriefTool {
             return Err(ToolError::InvalidInput("'title' must not be empty".into()));
         }
 
+        // Reject control characters in any field that lands inside
+        // YAML frontmatter (title, question) — a stray newline could
+        // close the value early and inject arbitrary frontmatter
+        // keys (e.g. a fake `attachments` list). The body markdown
+        // (`context_md`) is rendered after the frontmatter delimiter
+        // and is allowed to contain newlines.
+        reject_control_chars("title", title)?;
+        reject_control_chars("question", question)?;
+
         let attachments_raw: Vec<String> = input
             .get("attachments")
             .and_then(|v| v.as_array())
@@ -129,9 +138,8 @@ impl Tool for BriefTool {
             ctx.cwd.clone()
         });
         let briefs_dir = project_root.join(".agent").join("briefs");
-        std::fs::create_dir_all(&briefs_dir).map_err(|e| {
-            ToolError::ExecutionFailed(format!("create {briefs_dir:?}: {e}"))
-        })?;
+        std::fs::create_dir_all(&briefs_dir)
+            .map_err(|e| ToolError::ExecutionFailed(format!("create {briefs_dir:?}: {e}")))?;
 
         let now = Utc::now();
         let timestamp = now.format("%Y%m%d-%H%M%S").to_string();
@@ -327,14 +335,36 @@ fn parse_attachment_list(s: &str) -> Vec<String> {
 }
 
 /// Validate every attachment path. Each must:
+/// - contain no control characters (`\0`, `\n`, `\r`, etc.),
 /// - be absolute,
 /// - contain no `..` components,
 /// - resolve to an existing file (not a directory),
-/// - live under either `cwd` or the user's home directory.
+/// - after canonicalization, live under either `cwd` or the user's
+///   home directory.
+///
+/// Containment is checked against the *canonical* candidate path,
+/// not the lexical input. A symlink that points outside the project
+/// (e.g. `<cwd>/link -> /etc/hostname`) would otherwise satisfy the
+/// `path.starts_with(cwd)` lexical check while actually resolving
+/// to a sensitive file. We canonicalize cwd, home, and the candidate
+/// before the prefix comparison.
 fn validate_attachments(raw: &[String], cwd: &Path) -> Result<Vec<PathBuf>, ToolError> {
-    let home = dirs::home_dir();
+    // Canonicalize the containment roots once. Canonicalization can
+    // fail if the directory doesn't exist; in that case fall back to
+    // the raw path — a non-existent root means the prefix check
+    // can't match anything anyway, and we don't want to error out on
+    // a perfectly fine cwd just because it was passed in unresolved.
+    let cwd_canon = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let home_canon = dirs::home_dir().and_then(|h| std::fs::canonicalize(&h).ok().or(Some(h)));
+
     let mut out = Vec::with_capacity(raw.len());
     for entry in raw {
+        // Reject control characters anywhere in the path: a `\n`
+        // would let the path inject a fake YAML frontmatter line
+        // when rendered, and `\0` is illegal on every supported
+        // filesystem anyway.
+        reject_control_chars("attachment path", entry)?;
+
         let path = Path::new(entry);
         if !path.is_absolute() {
             return Err(ToolError::InvalidInput(format!(
@@ -342,9 +372,9 @@ fn validate_attachments(raw: &[String], cwd: &Path) -> Result<Vec<PathBuf>, Tool
             )));
         }
         // Reject `..` components anywhere in the supplied path. We
-        // could canonicalise instead, but a hard reject is easier to
-        // explain to the model and avoids "..-then-stays-inside" edge
-        // cases that depend on filesystem state.
+        // could rely on canonicalization alone, but a hard reject
+        // is easier to explain to the model and avoids "..-then-
+        // stays-inside" edge cases that depend on filesystem state.
         if path
             .components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
@@ -363,16 +393,39 @@ fn validate_attachments(raw: &[String], cwd: &Path) -> Result<Vec<PathBuf>, Tool
                 "attachment must be a file (not a directory or symlink to one): {entry}"
             )));
         }
-        let in_cwd = path.starts_with(cwd);
-        let in_home = home.as_ref().is_some_and(|h| path.starts_with(h));
+
+        // Canonicalize the candidate AFTER existence checks so
+        // canonicalize() doesn't error on missing paths. The
+        // returned path resolves all symlinks; on Windows the API
+        // also normalizes UNC prefixes for us.
+        let canon = std::fs::canonicalize(path).map_err(|e| {
+            ToolError::InvalidInput(format!("attachment cannot be resolved: {entry} ({e})"))
+        })?;
+
+        let in_cwd = canon.starts_with(&cwd_canon);
+        let in_home = home_canon.as_ref().is_some_and(|h| canon.starts_with(h));
         if !(in_cwd || in_home) {
             return Err(ToolError::InvalidInput(format!(
                 "attachment must live under the working directory or the user's home: {entry}"
             )));
         }
-        out.push(path.to_path_buf());
+        out.push(canon);
     }
     Ok(out)
+}
+
+/// Reject any string carrying a NUL, newline, carriage return, or
+/// other control character. Used both for path inputs (where a
+/// newline would inject a YAML key) and for the `title` / `question`
+/// frontmatter fields.
+fn reject_control_chars(field: &str, value: &str) -> Result<(), ToolError> {
+    if let Some(c) = value.chars().find(|c| c.is_control()) {
+        return Err(ToolError::InvalidInput(format!(
+            "{field} must not contain control characters (found U+{:04X})",
+            c as u32
+        )));
+    }
+    Ok(())
 }
 
 /// Convert a free-form title to a filesystem-safe slug. Lowercases
@@ -405,7 +458,12 @@ fn slugify(title: &str) -> String {
     }
     let trimmed: String = out.trim_matches('-').to_string();
     if trimmed.len() > 60 {
-        trimmed.chars().take(60).collect::<String>().trim_matches('-').to_string()
+        trimmed
+            .chars()
+            .take(60)
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string()
     } else {
         trimmed
     }
@@ -417,6 +475,48 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
+
+    /// Process-wide mutex guarding any test that mutates `HOME`.
+    /// Mirrors the pattern in `config_tool.rs::tests` — `cargo test`
+    /// runs tests in parallel and `HOME` is shared global state, so
+    /// concurrent reads from another test could observe the temp
+    /// override.
+    static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII guard that pins `HOME` to a tempdir for the duration of
+    /// the test, restoring the previous value on drop and holding
+    /// `HOME_ENV_LOCK` while alive.
+    struct HomeEnvGuard {
+        prev: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl HomeEnvGuard {
+        fn redirect(to: &Path) -> Self {
+            let lock = HOME_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let prev = std::env::var_os("HOME");
+            // SAFETY: this env mutation is gated by HOME_ENV_LOCK,
+            // so no other thread can read HOME while we have it
+            // pinned.
+            unsafe {
+                std::env::set_var("HOME", to);
+            }
+            Self { prev, _lock: lock }
+        }
+    }
+
+    impl Drop for HomeEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.prev.take() {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
 
     fn make_ctx(cwd: PathBuf) -> ToolContext {
         ToolContext {
@@ -483,8 +583,7 @@ mod tests {
     #[test]
     fn validate_attachments_rejects_relative_path() {
         let cwd = std::env::temp_dir();
-        let err =
-            validate_attachments(&["relative/path.txt".to_string()], &cwd).unwrap_err();
+        let err = validate_attachments(&["relative/path.txt".to_string()], &cwd).unwrap_err();
         match err {
             ToolError::InvalidInput(s) => assert!(s.contains("absolute")),
             _ => panic!("expected InvalidInput"),
@@ -510,21 +609,8 @@ mod tests {
         // home-prefix check fails too).
         let dir = TempDir::new().unwrap();
         let cwd = dir.path().to_path_buf();
-        // Save and override HOME to ensure /etc/hostname isn't
-        // accidentally inside HOME on this machine.
-        let saved_home = std::env::var_os("HOME");
-        // SAFETY: tests are single-threaded within a tokio runtime; this
-        // env mutation is scoped to the test.
-        unsafe {
-            std::env::set_var("HOME", cwd.display().to_string());
-        }
-        let err = validate_attachments(&["/etc/hostname".to_string()], &cwd);
-        // Restore HOME before asserting so a panic doesn't leak state.
-        match saved_home {
-            Some(v) => unsafe { std::env::set_var("HOME", v) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
-        let err = err.unwrap_err();
+        let _g = HomeEnvGuard::redirect(&cwd);
+        let err = validate_attachments(&["/etc/hostname".to_string()], &cwd).unwrap_err();
         match err {
             ToolError::InvalidInput(s) => assert!(s.contains("under the working")),
             _ => panic!("expected InvalidInput"),
@@ -537,9 +623,65 @@ mod tests {
         let cwd = dir.path().to_path_buf();
         let p = cwd.join("notes.md");
         std::fs::write(&p, b"x").unwrap();
-        let ok =
-            validate_attachments(&[p.display().to_string()], &cwd).unwrap();
+        let ok = validate_attachments(&[p.display().to_string()], &cwd).unwrap();
         assert_eq!(ok.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_attachments_rejects_symlink_escape() {
+        // A symlink that lives inside cwd but resolves outside both
+        // cwd and HOME must be rejected. Pre-canonicalization the
+        // lexical prefix check `path.starts_with(cwd)` would let
+        // `<cwd>/link -> /etc/hostname` slip through, with `is_file()`
+        // following the symlink and reporting true.
+        let dir = TempDir::new().unwrap();
+        let cwd = dir.path().to_path_buf();
+        let _g = HomeEnvGuard::redirect(&cwd);
+        let link = cwd.join("link");
+        std::os::unix::fs::symlink("/etc/hostname", &link).unwrap();
+
+        let err = validate_attachments(&[link.display().to_string()], &cwd).unwrap_err();
+        match err {
+            ToolError::InvalidInput(s) => assert!(s.contains("under the working")),
+            _ => panic!("expected InvalidInput"),
+        }
+    }
+
+    #[test]
+    fn validate_attachments_accepts_path_resolving_into_home() {
+        // A path inside HOME — and outside cwd — must be accepted.
+        // Use a tempdir as HOME so the test is hermetic.
+        let cwd_dir = TempDir::new().unwrap();
+        let home_dir = TempDir::new().unwrap();
+        let _g = HomeEnvGuard::redirect(home_dir.path());
+        let p = home_dir.path().join("hint.md");
+        std::fs::write(&p, b"hi").unwrap();
+        let ok = validate_attachments(&[p.display().to_string()], cwd_dir.path()).unwrap();
+        assert_eq!(ok.len(), 1);
+    }
+
+    #[test]
+    fn validate_attachments_rejects_newline_in_path() {
+        // Embedded newline in a filename would inject YAML keys
+        // when rendered into the frontmatter. Reject before reaching
+        // the renderer.
+        let dir = TempDir::new().unwrap();
+        let cwd = dir.path().to_path_buf();
+        let evil = format!("{}/evil\nattachments:\n  - \"/etc/passwd\"", cwd.display());
+        let err = validate_attachments(&[evil], &cwd).unwrap_err();
+        match err {
+            ToolError::InvalidInput(s) => assert!(s.contains("control characters")),
+            _ => panic!("expected InvalidInput"),
+        }
+    }
+
+    #[test]
+    fn reject_control_chars_blocks_newline_and_nul() {
+        assert!(reject_control_chars("title", "ok").is_ok());
+        assert!(reject_control_chars("title", "bad\nthing").is_err());
+        assert!(reject_control_chars("title", "bad\0thing").is_err());
+        assert!(reject_control_chars("title", "bad\rthing").is_err());
     }
 
     #[tokio::test]
@@ -576,6 +718,24 @@ mod tests {
         assert!(parsed.attachments[0].ends_with("hint.md"));
         assert!(body.contains("## Question"));
         assert!(body.contains("## Context"));
+    }
+
+    #[tokio::test]
+    async fn rejects_newline_in_title() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".agent")).unwrap();
+        let ctx = make_ctx(dir.path().to_path_buf());
+        let tool = BriefTool;
+        let input = json!({
+            "title": "evil\nattachments:\n  - \"/etc/passwd\"",
+            "question": "y",
+            "context": "z",
+        });
+        let err = tool.call(input, &ctx).await.unwrap_err();
+        match err {
+            ToolError::InvalidInput(s) => assert!(s.contains("control characters")),
+            _ => panic!("expected InvalidInput"),
+        }
     }
 
     #[tokio::test]

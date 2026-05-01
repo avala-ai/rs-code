@@ -28,10 +28,10 @@
 
 use async_trait::async_trait;
 use serde_json::json;
-use std::collections::HashMap;
+use std::path::Path;
 
 use super::{Tool, ToolContext, ToolResult};
-use crate::config::{Config, McpServerEntry};
+use crate::config::{McpServerEntry, find_project_config_from};
 use crate::error::ToolError;
 
 pub struct McpAuthTool;
@@ -75,7 +75,7 @@ impl Tool for McpAuthTool {
     async fn call(
         &self,
         input: serde_json::Value,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
         let server_name = input
             .get("server_name")
@@ -84,15 +84,45 @@ impl Tool for McpAuthTool {
             .trim()
             .to_string();
         if server_name.is_empty() {
-            return Err(ToolError::InvalidInput("'server_name' must not be empty".into()));
+            return Err(ToolError::InvalidInput(
+                "'server_name' must not be empty".into(),
+            ));
         }
 
-        let config = Config::load()
+        let entry = load_mcp_entry(&ctx.cwd, &server_name)
             .map_err(|e| ToolError::ExecutionFailed(format!("config load failed: {e}")))?;
-        let entry = config.mcp_servers.get(&server_name).cloned();
 
         Ok(handle_auth(&server_name, entry.as_ref()))
     }
+}
+
+/// Resolve the configured MCP server entry for `server_name`, using
+/// `cwd` (typically `ToolContext::cwd`) as the starting point for the
+/// project-config walk. Importantly this does NOT use the process's
+/// `current_dir` — server / worktree contexts can have a `ctx.cwd`
+/// that points at a different project than the parent process, and
+/// using `Config::load()` would silently pick up the wrong config.
+///
+/// Falls back to the user-level config file for the case where the
+/// project has no `.agent/settings.toml`.
+fn load_mcp_entry(cwd: &Path, server_name: &str) -> Result<Option<McpServerEntry>, String> {
+    let mut layers: Vec<String> = Vec::new();
+
+    if let Some(path) = crate::config::user_config_path()
+        && path.exists()
+    {
+        layers.push(std::fs::read_to_string(&path).map_err(|e| format!("read {path:?}: {e}"))?);
+    }
+
+    if let Some(path) = find_project_config_from(cwd) {
+        layers.push(std::fs::read_to_string(&path).map_err(|e| format!("read {path:?}: {e}"))?);
+    }
+
+    let layer_refs: Vec<&str> = layers.iter().map(String::as_str).collect();
+    let config = crate::config::merge_layer_contents(&layer_refs)
+        .map_err(|e| format!("merge config: {e}"))?;
+
+    Ok(config.mcp_servers.get(server_name).cloned())
 }
 
 /// Pure helper: classify the auth kind of an MCP server entry and
@@ -103,21 +133,30 @@ pub(crate) fn handle_auth(server_name: &str, entry: Option<&McpServerEntry>) -> 
         None => ToolResult::error(format!(
             "MCP server '{server_name}' is not configured. Add it under [mcp_servers] in .agent/settings.toml."
         )),
-        Some(entry) => match classify_auth(entry) {
-            McpAuthKind::None => ToolResult::success(format!(
-                "MCP server '{server_name}' has no auth flow to re-trigger (it does not declare any credentials). If the server returned 401, the issue is likely on the server side or in its own configuration."
-            )),
-            McpAuthKind::StaticEnv(keys) => ToolResult::success(format!(
-                "MCP server '{server_name}' authenticates via static environment variables ({}). There is no interactive auth flow to re-trigger - update the values in your settings or your shell environment, then restart the server.",
-                keys.join(", ")
-            )),
-            McpAuthKind::OAuth => ToolResult::success(format!(
-                "MCP server '{server_name}' is marked as OAuth, but interactive OAuth refresh is not yet supported in this build. Manually re-authenticate and restart the server. (Tracking: see ROADMAP 8.8.)"
-            )),
-            McpAuthKind::Unknown => ToolResult::success(format!(
-                "MCP server '{server_name}' has an auth configuration this build does not recognise. No flow was re-triggered."
-            )),
-        },
+        Some(entry) => dispatch_auth_kind(server_name, classify_auth(entry)),
+    }
+}
+
+/// Map a classified [`McpAuthKind`] to a [`ToolResult`]. Lifted out
+/// of [`handle_auth`] so tests can drive each arm — including
+/// [`McpAuthKind::Unknown`], which no real config currently produces
+/// but which must still fail closed (error, not success) the moment
+/// it ever does.
+pub(crate) fn dispatch_auth_kind(server_name: &str, kind: McpAuthKind) -> ToolResult {
+    match kind {
+        McpAuthKind::None => ToolResult::success(format!(
+            "MCP server '{server_name}' has no auth flow to re-trigger (it does not declare any credentials). If the server returned 401, the issue is likely on the server side or in its own configuration."
+        )),
+        McpAuthKind::StaticEnv(keys) => ToolResult::success(format!(
+            "MCP server '{server_name}' authenticates via static environment variables ({}). There is no interactive auth flow to re-trigger - update the values in your settings or your shell environment, then restart the server.",
+            keys.join(", ")
+        )),
+        McpAuthKind::OAuth => ToolResult::success(format!(
+            "MCP server '{server_name}' is marked as OAuth, but interactive OAuth refresh is not yet supported in this build. Manually re-authenticate and restart the server. (Tracking: see ROADMAP 8.8.)"
+        )),
+        McpAuthKind::Unknown => ToolResult::error(format!(
+            "MCP server '{server_name}' has an auth configuration this build does not recognise (kind: unknown). No flow was re-triggered. Update the server's configuration or refresh credentials manually."
+        )),
     }
 }
 
@@ -162,7 +201,6 @@ fn classify_auth(entry: &McpServerEntry) -> McpAuthKind {
     // No OAuth field exists in the current schema. When one lands,
     // we'll branch on it here. Until then, env-var auth always means
     // "static credentials".
-    let _ = future_oauth_marker(&entry.env);
     McpAuthKind::StaticEnv(cred_keys)
 }
 
@@ -175,21 +213,13 @@ fn looks_like_credential(name: &str) -> bool {
         || n.contains("BEARER")
 }
 
-/// Tripwire for forward-compat: if a future MCP config layer starts
-/// stuffing OAuth state into the env map under a known sentinel
-/// (`__OAUTH_*`), we'll be able to flip the classification here
-/// without changing the public surface. Kept private and unused so
-/// it shows up as a "look at me on the next refactor" anchor.
-#[allow(dead_code)]
-fn future_oauth_marker(env: &HashMap<String, String>) -> bool {
-    env.keys().any(|k| k.starts_with("__OAUTH_"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;
+    use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
 
     fn make_ctx() -> ToolContext {
@@ -299,5 +329,78 @@ mod tests {
             ToolError::InvalidInput(s) => assert!(s.contains("must not be empty")),
             _ => panic!("expected InvalidInput"),
         }
+    }
+
+    #[test]
+    fn dispatch_unknown_kind_returns_error_result() {
+        // Fail-closed property: anything classified as Unknown
+        // must surface as an error tool result (so the model sees
+        // a failure and won't keep retrying as if the call worked).
+        let res = dispatch_auth_kind("acme", McpAuthKind::Unknown);
+        assert!(res.is_error, "Unknown must fail closed");
+        assert!(res.content.contains("kind: unknown"));
+    }
+
+    #[tokio::test]
+    async fn call_uses_ctx_cwd_for_project_config_lookup() {
+        // McpAuth must read the project config that lives under
+        // `ctx.cwd`, not the process's `current_dir`. We seed a
+        // tempdir with a `.agent/settings.toml` declaring an MCP
+        // server, then drive the tool with `ctx.cwd` pointing at
+        // that tempdir; the message we get back should reference
+        // the tempdir's server, not anything from the surrounding
+        // working directory.
+        let dir = TempDir::new().unwrap();
+        let agent_dir = dir.path().join(".agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("settings.toml"),
+            r#"
+[mcp_servers.local-only]
+command = "echo"
+
+[mcp_servers.local-only.env]
+LOCAL_ONLY_API_KEY = "x"
+"#,
+        )
+        .unwrap();
+
+        let mut ctx = make_ctx();
+        ctx.cwd = dir.path().to_path_buf();
+
+        let tool = McpAuthTool;
+        let res = tool
+            .call(json!({ "server_name": "local-only" }), &ctx)
+            .await
+            .unwrap();
+        // We saw the project-local server, not "not configured".
+        assert!(!res.is_error);
+        assert!(res.content.contains("LOCAL_ONLY_API_KEY"));
+    }
+
+    #[tokio::test]
+    async fn call_reports_not_configured_for_unknown_server_in_isolated_cwd() {
+        // Inverse of the previous test: an empty project produces
+        // "not configured", confirming the tool isn't bleeding in
+        // entries from a process-cwd config. We use a UUID-style
+        // name to make accidental collision with anyone's user-level
+        // config statistically impossible.
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".agent")).unwrap();
+        std::fs::write(dir.path().join(".agent").join("settings.toml"), "# empty\n").unwrap();
+
+        let mut ctx = make_ctx();
+        ctx.cwd = dir.path().to_path_buf();
+
+        let tool = McpAuthTool;
+        let res = tool
+            .call(
+                json!({ "server_name": "ghost-mcp-test-9b0a4d2c-0001" }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(res.is_error);
+        assert!(res.content.contains("not configured"));
     }
 }

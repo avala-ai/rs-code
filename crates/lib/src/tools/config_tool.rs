@@ -91,6 +91,17 @@ impl Tool for ConfigTool {
     ) -> PermissionDecision {
         match input.get("action").and_then(|v| v.as_str()) {
             Some("get") | Some("list_supported") => PermissionDecision::Allow,
+            Some("set") => {
+                // Validate the key against the allow-list and the
+                // security-sensitive tripwire BEFORE routing to the
+                // permission rule check. A disallowed key would
+                // otherwise surface in the prompter and any audit
+                // log even though it was always going to be rejected.
+                if let Err(reason) = preflight_set_key(input) {
+                    return PermissionDecision::Deny(reason);
+                }
+                checker.check(self.name(), input)
+            }
             _ => checker.check(self.name(), input),
         }
     }
@@ -125,21 +136,12 @@ impl Tool for ConfigTool {
                 Ok(ToolResult::success(format!("{key} = {value_str}")))
             }
             "set" => {
-                // The interactive permission gate runs *after* this
-                // method when [`check_permissions`] returned `Ask`.
-                // Honour any prompter installed on the context — if
-                // the user denies, we abort before mutating disk.
-                if let Some(prompter) = &ctx.permission_prompter {
-                    use super::PermissionResponse;
-                    match prompter.ask(self.name(), self.description(), Some(&input.to_string())) {
-                        PermissionResponse::AllowOnce | PermissionResponse::AllowSession => {}
-                        PermissionResponse::Deny => {
-                            return Err(ToolError::PermissionDenied(
-                                "user denied Config set request".into(),
-                            ));
-                        }
-                    }
-                }
+                // Validate the key against the allow-list and the
+                // security-sensitive tripwire FIRST, before any
+                // permission prompter or audit-log surface — a
+                // disallowed key must produce an immediate rejection
+                // without ever reaching the prompter.
+                preflight_set_key(&input).map_err(ToolError::InvalidInput)?;
 
                 let key = input
                     .get("key")
@@ -158,6 +160,23 @@ impl Tool for ConfigTool {
                 let coerced = supported_settings::coerce_value(setting, value)
                     .map_err(ToolError::InvalidInput)?;
 
+                // Honour any prompter installed on the context — only
+                // *after* the key has been validated — so the user
+                // sees prompts only for legitimate, allow-listed
+                // settings. If the user denies, we abort before
+                // mutating disk.
+                if let Some(prompter) = &ctx.permission_prompter {
+                    use super::PermissionResponse;
+                    match prompter.ask(self.name(), self.description(), Some(&input.to_string())) {
+                        PermissionResponse::AllowOnce | PermissionResponse::AllowSession => {}
+                        PermissionResponse::Deny => {
+                            return Err(ToolError::PermissionDenied(
+                                "user denied Config set request".into(),
+                            ));
+                        }
+                    }
+                }
+
                 write_setting(setting, &ctx.cwd, coerced.clone())?;
 
                 Ok(ToolResult::success(format!(
@@ -172,6 +191,41 @@ impl Tool for ConfigTool {
             ))),
         }
     }
+}
+
+/// Validate a `set`-action input by reading `key` and ensuring it is
+/// present, well-shaped, NOT in a security-sensitive section, NOT an
+/// API-key key, and on the allow-list. Returns the rejection message
+/// on failure so callers can map it into either `ToolError::InvalidInput`
+/// (when called inside `call`) or `PermissionDecision::Deny` (when
+/// called from `check_permissions`).
+///
+/// Runs as the very first step of `set` handling — before any
+/// prompter, audit log, or filesystem touch — so that disallowed
+/// keys produce identical rejection messages on both paths and never
+/// surface in the permission preview.
+fn preflight_set_key(input: &serde_json::Value) -> Result<(), String> {
+    let key = input
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "'key' is required for set".to_string())?;
+
+    if supported_settings::is_security_sensitive_section(key) {
+        return Err(format!(
+            "setting '{key}' is in a security-sensitive section and cannot be set via this tool. Edit the config file by hand if you really need this."
+        ));
+    }
+    if supported_settings::any_segment_matches_api_key(key) {
+        return Err(format!(
+            "setting '{key}' looks like an API key — those must be supplied via environment variables or the api_key_helper command, not written through this tool."
+        ));
+    }
+    if supported_settings::lookup(key).is_none() {
+        return Err(format!(
+            "setting '{key}' is not on the allow-list. Anything not listed by action=\"list_supported\" is intentionally not mutable from a tool call."
+        ));
+    }
+    Ok(())
 }
 
 /// Resolve the on-disk TOML file path for a setting's scope. `User`
@@ -192,10 +246,7 @@ fn settings_path_for(scope: Scope, cwd: &Path) -> Option<PathBuf> {
 /// `Ok(None)` if the file or key doesn't exist — the caller renders
 /// that as `(unset)`. Wrong-typed values produce an error so a
 /// hand-edited file with the wrong shape doesn't silently coerce.
-fn read_setting(
-    setting: &SupportedSetting,
-    cwd: &Path,
-) -> Result<Option<toml::Value>, ToolError> {
+fn read_setting(setting: &SupportedSetting, cwd: &Path) -> Result<Option<toml::Value>, ToolError> {
     let path = match settings_path_for(setting.scope, cwd) {
         Some(p) => p,
         None => return Ok(None),
@@ -233,9 +284,8 @@ fn write_setting(
     cwd: &Path,
     value: toml::Value,
 ) -> Result<(), ToolError> {
-    let path = settings_path_for(setting.scope, cwd).ok_or_else(|| {
-        ToolError::ExecutionFailed("could not determine settings path".into())
-    })?;
+    let path = settings_path_for(setting.scope, cwd)
+        .ok_or_else(|| ToolError::ExecutionFailed("could not determine settings path".into()))?;
 
     if let Some(parent) = path.parent()
         && !parent.exists()
@@ -257,8 +307,63 @@ fn write_setting(
 
     let serialized = toml::to_string_pretty(&doc)
         .map_err(|e| ToolError::ExecutionFailed(format!("serialize: {e}")))?;
-    std::fs::write(&path, serialized)
-        .map_err(|e| ToolError::ExecutionFailed(format!("write {path:?}: {e}")))?;
+    atomic_write(&path, serialized.as_bytes())?;
+    Ok(())
+}
+
+/// Write `bytes` to `path` atomically: serialize to a sibling temp
+/// file in the same directory, fsync the contents, then rename over
+/// the destination. A crash, ENOSPC, or process kill mid-write
+/// leaves the original settings file untouched — without this dance
+/// `std::fs::write`'s in-place truncate-and-write would corrupt the
+/// whole file. POSIX guarantees `rename` is atomic; on Windows the
+/// underlying `MoveFileEx` is atomic on local filesystems, which is
+/// the only place the user's settings live.
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+    use std::io::Write as _;
+
+    let parent = path.parent().ok_or_else(|| {
+        ToolError::ExecutionFailed(format!("settings path has no parent: {path:?}"))
+    })?;
+    if !parent.exists() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ToolError::ExecutionFailed(format!("create {parent:?}: {e}")))?;
+    }
+
+    // Compose a temp path next to the destination so the final rename
+    // stays on the same filesystem and is atomic. Including the pid
+    // and a nanosecond timestamp prevents two concurrent writers (in
+    // different processes) from clobbering each other's temp file.
+    let stem = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "settings".to_string());
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = parent.join(format!(".{stem}.tmp.{pid}.{nanos}"));
+
+    let write_result = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        Ok(())
+    })();
+    if let Err(e) = write_result {
+        // Best-effort cleanup of the partial temp file; the rename
+        // would be unsafe to attempt now anyway.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(ToolError::ExecutionFailed(format!("write {tmp:?}: {e}")));
+    }
+
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(ToolError::ExecutionFailed(format!(
+            "rename {tmp:?} -> {path:?}: {e}"
+        )));
+    }
     Ok(())
 }
 
@@ -275,11 +380,11 @@ fn set_dotted(doc: &mut toml::Value, key: &str, value: toml::Value) -> Result<()
     }
     let mut cursor = doc;
     for seg in &segments[..segments.len() - 1] {
-        let cursor_table = cursor
-            .as_table_mut()
-            .ok_or_else(|| ToolError::ExecutionFailed(format!(
+        let cursor_table = cursor.as_table_mut().ok_or_else(|| {
+            ToolError::ExecutionFailed(format!(
                 "cannot descend into non-table at '{seg}' while setting {key}"
-            )))?;
+            ))
+        })?;
         let entry = cursor_table
             .entry((*seg).to_string())
             .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
@@ -438,6 +543,9 @@ mod tests {
 
     #[tokio::test]
     async fn set_rejects_unlisted_key() {
+        // `permissions.default_mode` is in a security-sensitive
+        // section, so it's rejected by the up-front tripwire even
+        // before the allow-list lookup runs.
         let dir = TempDir::new().unwrap();
         let ctx = make_ctx(dir.path().to_path_buf());
 
@@ -454,8 +562,27 @@ mod tests {
             .unwrap_err();
         match err {
             ToolError::InvalidInput(s) => {
-                assert!(s.contains("not on the allow-list"));
+                assert!(s.contains("security-sensitive") || s.contains("not on the allow-list"));
             }
+            _ => panic!("expected InvalidInput"),
+        }
+
+        // Also exercise a key that isn't on the allow-list but lives
+        // outside any blocked section, to make sure the allow-list
+        // check itself still rejects it.
+        let err = ConfigTool
+            .call(
+                json!({
+                    "action": "set",
+                    "key": "telemetry.endpoint",
+                    "value": "https://example",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        match err {
+            ToolError::InvalidInput(s) => assert!(s.contains("not on the allow-list")),
             _ => panic!("expected InvalidInput"),
         }
     }
@@ -581,5 +708,192 @@ mod tests {
             .check_permissions(&json!({ "action": "get", "key": "ui.theme" }), &checker)
             .await;
         assert!(matches!(dec, PermissionDecision::Allow));
+    }
+
+    #[tokio::test]
+    async fn check_permissions_denies_security_sensitive_set_before_prompt() {
+        // The disallowed key must be rejected at the permission stage
+        // — never reaching the prompter or any audit log surface.
+        let checker = PermissionChecker::allow_all();
+        let tool = ConfigTool;
+        let dec = tool
+            .check_permissions(
+                &json!({
+                    "action": "set",
+                    "key": "permissions.default_mode",
+                    "value": "allow",
+                }),
+                &checker,
+            )
+            .await;
+        match dec {
+            PermissionDecision::Deny(reason) => {
+                assert!(reason.contains("security-sensitive"));
+            }
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn check_permissions_denies_unlisted_set_before_prompt() {
+        let checker = PermissionChecker::allow_all();
+        let tool = ConfigTool;
+        let dec = tool
+            .check_permissions(
+                &json!({
+                    "action": "set",
+                    "key": "telemetry.endpoint",
+                    "value": "https://example",
+                }),
+                &checker,
+            )
+            .await;
+        match dec {
+            PermissionDecision::Deny(reason) => {
+                assert!(reason.contains("not on the allow-list"));
+            }
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn check_permissions_denies_api_key_segment_before_prompt() {
+        let checker = PermissionChecker::allow_all();
+        let tool = ConfigTool;
+        let dec = tool
+            .check_permissions(
+                &json!({
+                    "action": "set",
+                    "key": "ui.theme.api_key_color",
+                    "value": "#000",
+                }),
+                &checker,
+            )
+            .await;
+        match dec {
+            PermissionDecision::Deny(reason) => {
+                assert!(reason.contains("API key"));
+            }
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    /// Permission prompter that records each invocation so a test can
+    /// assert it was (or was not) asked.
+    struct RecordingPrompter {
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingPrompter {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn invocations(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl super::super::PermissionPrompter for RecordingPrompter {
+        fn ask(
+            &self,
+            tool_name: &str,
+            _description: &str,
+            input_preview: Option<&str>,
+        ) -> super::super::PermissionResponse {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{tool_name}::{}", input_preview.unwrap_or("")));
+            super::super::PermissionResponse::AllowOnce
+        }
+    }
+
+    #[tokio::test]
+    async fn set_disallowed_key_does_not_invoke_prompter() {
+        // Even via the `call` path (which mirrors what the executor
+        // does under `Allow`), a disallowed key must never reach the
+        // prompter. This exercises the in-`call` preflight check.
+        let dir = TempDir::new().unwrap();
+        let prompter = Arc::new(RecordingPrompter::new());
+        let mut ctx = make_ctx(dir.path().to_path_buf());
+        ctx.permission_prompter = Some(prompter.clone());
+
+        let err = ConfigTool
+            .call(
+                json!({
+                    "action": "set",
+                    "key": "permissions.default_mode",
+                    "value": "allow",
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        match err {
+            ToolError::InvalidInput(s) => assert!(s.contains("security-sensitive")),
+            _ => panic!("expected InvalidInput"),
+        }
+        assert!(
+            prompter.invocations().is_empty(),
+            "prompter must not be invoked for a disallowed key, got: {:?}",
+            prompter.invocations()
+        );
+    }
+
+    #[tokio::test]
+    async fn atomic_write_leaves_original_intact_when_rename_target_is_unwritable() {
+        // If the destination directory is read-only at rename time,
+        // the temp file write+rename fails and the existing settings
+        // file (if any) must still be intact. This is the property
+        // that distinguishes atomic write from `std::fs::write` —
+        // a half-written file would corrupt the user's settings.
+        //
+        // We simulate the failure by pointing the project-scope
+        // settings path at a directory we then chmod 0o500 (read+exec
+        // only) — `rename` into it will fail with EACCES.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = TempDir::new().unwrap();
+            let project_root = dir.path();
+            let agent_dir = project_root.join(".agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let settings = agent_dir.join("settings.toml");
+            std::fs::write(&settings, b"[api]\nmodel = \"original\"\n").unwrap();
+            let original = std::fs::read(&settings).unwrap();
+
+            // Make the `.agent/` directory read-only so creating the
+            // temp file inside it fails outright.
+            let mut perms = std::fs::metadata(&agent_dir).unwrap().permissions();
+            perms.set_mode(0o500);
+            std::fs::set_permissions(&agent_dir, perms).unwrap();
+
+            let ctx = make_ctx(project_root.to_path_buf());
+            let res = ConfigTool
+                .call(
+                    json!({
+                        "action": "set",
+                        "key": "api.model",
+                        "value": "should-not-land",
+                    }),
+                    &ctx,
+                )
+                .await;
+
+            // Restore write perm so TempDir can clean up regardless
+            // of test outcome.
+            let mut perms = std::fs::metadata(&agent_dir).unwrap().permissions();
+            perms.set_mode(0o700);
+            std::fs::set_permissions(&agent_dir, perms).unwrap();
+
+            assert!(res.is_err(), "write should fail with read-only parent");
+
+            // The original file must be untouched.
+            let after = std::fs::read(&settings).unwrap();
+            assert_eq!(after, original, "atomic write must not corrupt original");
+        }
     }
 }

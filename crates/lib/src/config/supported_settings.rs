@@ -145,9 +145,7 @@ pub fn coerce_value(
             .ok_or_else(|| format!("setting '{}' expects a float", setting.key)),
         (SettingKind::Float, _) => Err(format!("setting '{}' expects a number", setting.key)),
 
-        (SettingKind::String, serde_json::Value::String(s)) => {
-            Ok(toml::Value::String(s.clone()))
-        }
+        (SettingKind::String, serde_json::Value::String(s)) => Ok(toml::Value::String(s.clone())),
         (SettingKind::String, _) => Err(format!("setting '{}' expects a string", setting.key)),
 
         (SettingKind::Enum(allowed), serde_json::Value::String(s)) => {
@@ -165,6 +163,33 @@ pub fn coerce_value(
             setting.key
         )),
     }
+}
+
+/// Section names whose contents are off-limits to the model-callable
+/// `Config` tool. Compared as separator-aware lowercase top-level
+/// segments — `permissionsx` does not match, `permissions.foo` does.
+const BLOCKED_SECTIONS: &[&str] = &["permissions", "security", "sandbox", "hooks", "mcp_servers"];
+
+/// Return true when `key`'s first dotted segment (lowercased) matches
+/// one of the blocked section names exactly. Used both by the
+/// allow-list tripwire test and by the `Config` tool's runtime
+/// validator so that `set permissions.default_mode = "allow"` is
+/// rejected up front, regardless of what's on the allow-list.
+pub fn is_security_sensitive_section(key: &str) -> bool {
+    let head = key.split('.').next().unwrap_or("").to_ascii_lowercase();
+    BLOCKED_SECTIONS.iter().any(|blocked| head == *blocked)
+}
+
+/// Return true when *any* dotted segment of `key`, lowercased,
+/// contains one of the API-key markers (`api_key`, `api-key`,
+/// `apikey`). Catches `theme.api_key_color` as well as bare
+/// `API_KEY`. Invariant for the allow-list and the runtime
+/// validator alike.
+pub fn any_segment_matches_api_key(key: &str) -> bool {
+    key.split('.').any(|segment| {
+        let lower = segment.to_ascii_lowercase();
+        lower.contains("api_key") || lower.contains("api-key") || lower.contains("apikey")
+    })
 }
 
 #[cfg(test)]
@@ -198,7 +223,10 @@ mod tests {
     #[test]
     fn coerce_bool_accepts_only_bool() {
         let s = lookup("ui.markdown").unwrap();
-        assert_eq!(coerce_value(s, &json!(true)).unwrap(), toml::Value::Boolean(true));
+        assert_eq!(
+            coerce_value(s, &json!(true)).unwrap(),
+            toml::Value::Boolean(true)
+        );
         assert!(coerce_value(s, &json!("true")).is_err());
         assert!(coerce_value(s, &json!(1)).is_err());
     }
@@ -235,14 +263,46 @@ mod tests {
 
     #[test]
     fn no_security_sensitive_keys_in_allowlist() {
-        // Tripwire — any of these would be a footgun.
+        // Tripwire — any of these would be a footgun. Match by
+        // separator-aware top-level segment, case-insensitively,
+        // so neighbouring section names that merely share a prefix
+        // (e.g. `permissionsx`) don't get spuriously flagged but
+        // `permissions.foo` still does.
         for s in SUPPORTED_SETTINGS {
-            assert!(!s.key.starts_with("permissions"));
-            assert!(!s.key.starts_with("security"));
-            assert!(!s.key.starts_with("sandbox"));
-            assert!(!s.key.starts_with("hooks"));
-            assert!(!s.key.starts_with("mcp_servers"));
-            assert!(!s.key.contains("api_key"));
+            assert!(
+                !is_security_sensitive_section(s.key),
+                "allow-list entry {:?} sits in a security-sensitive section",
+                s.key
+            );
+            assert!(
+                !any_segment_matches_api_key(s.key),
+                "allow-list entry {:?} looks like an API key",
+                s.key
+            );
         }
+    }
+
+    #[test]
+    fn tripwire_separator_aware_prefix_check() {
+        // The tripwire matches whole section names, not raw substrings.
+        assert!(is_security_sensitive_section("permissions.default_mode"));
+        assert!(is_security_sensitive_section("PERMISSIONS.foo")); // case-insensitive
+        assert!(is_security_sensitive_section("permissions")); // exact section name
+        assert!(!is_security_sensitive_section("permissionsx.foo")); // not a real prefix
+        assert!(!is_security_sensitive_section("ui.permissions_label")); // not a top-level section
+        assert!(!is_security_sensitive_section("theme")); // unrelated
+    }
+
+    #[test]
+    fn tripwire_api_key_segment_check_covers_variants() {
+        // Every segment of every dotted key is examined,
+        // case-insensitively, for `api_key` / `api-key` / `apikey`.
+        assert!(any_segment_matches_api_key("API_KEY"));
+        assert!(any_segment_matches_api_key("api-key"));
+        assert!(any_segment_matches_api_key("apikey"));
+        assert!(any_segment_matches_api_key("theme.api_key_color")); // substring within segment
+        assert!(any_segment_matches_api_key("ui.APIKEY_color"));
+        assert!(!any_segment_matches_api_key("theme")); // pure unrelated key
+        assert!(!any_segment_matches_api_key("ui.markdown"));
     }
 }
