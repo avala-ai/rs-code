@@ -95,34 +95,33 @@ pub fn parse_sed_segment(segment: &str) -> Option<SedEdit> {
             let _ = stripped;
             continue;
         }
-        if tok == "-i" {
-            in_place = true;
-            // BSD sed: `-i` requires a backup-suffix argument; treat
-            // the next token as that suffix unless it looks like a
-            // script (starts with `s/`, `/`, `g`...) or an option.
-            if let Some(next) = iter.peek()
-                && looks_like_backup_suffix(next)
-            {
-                iter.next();
-            }
-            continue;
-        }
-        if let Some(rest) = tok.strip_prefix("-i") {
-            in_place = true;
-            // GNU `-iSUFFIX` form.
-            let _ = rest;
-            continue;
-        }
         if tok == "-e" || tok == "--expression" || tok == "-f" || tok == "--file" {
             // Skip the script/file argument that follows.
             iter.next();
             script_consumed = true;
             continue;
         }
-        if tok == "-n" || tok == "-E" || tok == "-r" || tok == "-s" || tok == "--posix" {
+        if let Some(parsed) = parse_short_option_cluster(tok) {
+            if parsed.has_inplace {
+                in_place = true;
+                // BSD sed: `-i` (clustered or not) without an inline
+                // suffix accepts the next token as a separate suffix
+                // argument. Consume it only when it looks like one so
+                // we do not eat the script.
+                if !parsed.inplace_has_inline_suffix
+                    && let Some(next) = iter.peek()
+                    && looks_like_backup_suffix(next)
+                {
+                    iter.next();
+                }
+            }
             continue;
         }
         if tok.starts_with('-') {
+            // Unrecognized long option (e.g. `--posix`, `--debug`) —
+            // ignore. We deliberately do not return here; the goal is
+            // to be permissive about unknown flags so we still detect
+            // the file targets when `-i` is present.
             continue;
         }
 
@@ -142,6 +141,59 @@ pub fn parse_sed_segment(segment: &str) -> Option<SedEdit> {
         return None;
     }
     Some(SedEdit { files })
+}
+
+/// Outcome of decomposing a short-option token like `-Ei` or `-iSUFFIX`.
+struct ShortClusterParse {
+    /// Token contained an `i` character → in-place edit.
+    has_inplace: bool,
+    /// The cluster carried an inline suffix (GNU `-iSUFFIX` form, or a
+    /// trailing run after `i` like `-Eie`). When false, BSD-style
+    /// callers may still consume the next token as a separate suffix.
+    inplace_has_inline_suffix: bool,
+}
+
+/// Parse a short-option cluster such as `-n`, `-Ei`, `-iSUFFIX`, or
+/// `-nEi`. Returns `None` for anything that is not a single-dash short
+/// cluster (long options or non-options).
+///
+/// We walk the characters left-to-right. When we encounter `i`, every
+/// remaining character in the same token is the GNU inline backup
+/// suffix and parsing stops. This matches GNU sed's documented
+/// behaviour: `-i` may be clustered with other short flags as long as
+/// it appears last, and any trailing characters become the suffix.
+fn parse_short_option_cluster(tok: &str) -> Option<ShortClusterParse> {
+    if tok.starts_with("--") {
+        return None;
+    }
+    let rest = tok.strip_prefix('-')?;
+    if rest.is_empty() {
+        return None;
+    }
+
+    let mut has_inplace = false;
+    let mut inplace_has_inline_suffix = false;
+
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        if c == 'i' {
+            has_inplace = true;
+            // Anything left in the cluster is the GNU `-iSUFFIX`
+            // inline backup suffix.
+            if chars.next().is_some() {
+                inplace_has_inline_suffix = true;
+            }
+            break;
+        }
+        // Other short flags are booleans for our purposes. We accept
+        // unknown letters silently rather than bailing — the goal is
+        // to find `i` whenever it appears.
+    }
+
+    Some(ShortClusterParse {
+        has_inplace,
+        inplace_has_inline_suffix,
+    })
 }
 
 /// Strip surrounding quotes and a leading path from a command name.
@@ -327,5 +379,72 @@ mod tests {
         let edits = parse_sed_edits(&parse("sed -i -- 's/x/y/' --weird-name.txt"));
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].files, vec![PathBuf::from("--weird-name.txt")]);
+    }
+
+    #[test]
+    fn gnu_inline_suffix_extracts_file() {
+        // `-iSUFFIX` form (GNU): the suffix is glued to `i`.
+        let edits = parse_sed_edits(&parse("sed -i.bak 's/foo/bar/' src/main.rs"));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].files, vec![PathBuf::from("src/main.rs")]);
+    }
+
+    #[test]
+    fn clustered_extended_then_inplace() {
+        // `-Ei` — extended regex + in-place. Was previously dropped by
+        // the catch-all `tok.starts_with('-')` arm.
+        let edits = parse_sed_edits(&parse("sed -Ei 's/x/y/' .git/config"));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].files, vec![PathBuf::from(".git/config")]);
+    }
+
+    #[test]
+    fn clustered_quiet_extended_inplace() {
+        // `-nEi` — three short flags clustered, in-place last.
+        let edits = parse_sed_edits(&parse("sed -nEi 's/x/y/' src/lib.rs"));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].files, vec![PathBuf::from("src/lib.rs")]);
+    }
+
+    #[test]
+    fn clustered_inline_suffix() {
+        // `-Eie` — extended + in-place with inline suffix `e`. The
+        // following token must NOT be eaten as a separate suffix.
+        let edits = parse_sed_edits(&parse("sed -Eie 's/x/y/' file.txt"));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].files, vec![PathBuf::from("file.txt")]);
+    }
+
+    #[test]
+    fn bsd_clustered_inplace_separator_suffix() {
+        // BSD-style: `-ie '.bak' file` — `-ie` is the cluster, `.bak`
+        // is consumed as the separate backup suffix in some seds.
+        // Either interpretation must still produce `file` as the
+        // target.
+        let edits = parse_sed_edits(&parse("sed -ie '.bak' file.txt"));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].files, vec![PathBuf::from("file.txt")]);
+    }
+
+    #[test]
+    fn bsd_inplace_with_separator_suffix_and_extended() {
+        // `-Ei .bak 's/x/y/' file` — clustered `-Ei` followed by a
+        // BSD-style separate suffix.
+        let edits = parse_sed_edits(&parse("sed -Ei .bak 's/x/y/' file.txt"));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].files, vec![PathBuf::from("file.txt")]);
+    }
+
+    #[test]
+    fn long_inplace_with_value() {
+        let edits = parse_sed_edits(&parse("sed --in-place=.bak 's/x/y/' file.txt"));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].files, vec![PathBuf::from("file.txt")]);
+    }
+
+    #[test]
+    fn cluster_without_i_does_not_trigger() {
+        // `-nE` has no `i` — must not be treated as in-place.
+        assert!(parse_sed_edits(&parse("sed -nE 's/x/y/' file.txt")).is_empty());
     }
 }
