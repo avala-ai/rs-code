@@ -68,8 +68,9 @@ impl Tool for CronListTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
 
-        let store = open_store()
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to open schedule store: {e}")))?;
+        let store = open_store().map_err(|e| {
+            ToolError::ExecutionFailed(format!("Failed to open schedule store: {e}"))
+        })?;
 
         let now = Utc::now().naive_utc();
         let summaries: Vec<RoutineSummary> = store

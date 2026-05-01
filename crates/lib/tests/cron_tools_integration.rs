@@ -5,7 +5,7 @@
 //! a temp-dir storage backend so nothing escapes the test sandbox.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use agent_code_lib::permissions::PermissionChecker;
 use agent_code_lib::tools::cron_create::CronCreateTool;
@@ -16,10 +16,12 @@ use agent_code_lib::tools::remote_trigger::RemoteTriggerTool;
 use agent_code_lib::tools::{Tool, ToolContext};
 use serde_json::json;
 use tempfile::TempDir;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 /// Serialize env-var access across the integration tests so the two
-/// tests don't trample each other's storage directory.
+/// tests don't trample each other's storage directory. Async-aware
+/// because the tests hold the guard across `await` points.
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -43,7 +45,7 @@ fn ctx() -> ToolContext {
 
 #[tokio::test]
 async fn lifecycle_create_list_trigger_delete() {
-    let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = env_lock().lock().await;
     // Hermetic storage so this test doesn't touch the real config dir.
     let tmp = TempDir::new().unwrap();
     // SAFETY: env access is serialized via `env_lock()`.
@@ -63,7 +65,11 @@ async fn lifecycle_create_list_trigger_delete() {
         )
         .await
         .expect("create succeeds");
-    assert!(!create_res.is_error, "create errored: {}", create_res.content);
+    assert!(
+        !create_res.is_error,
+        "create errored: {}",
+        create_res.content
+    );
     let created: serde_json::Value = serde_json::from_str(&create_res.content).unwrap();
     assert_eq!(created["id"].as_str(), Some("integration-routine"));
     assert!(created["next_run_at"].is_string());
@@ -133,7 +139,7 @@ async fn lifecycle_create_list_trigger_delete() {
 
 #[tokio::test]
 async fn trigger_missing_routine_is_invalid_input() {
-    let _guard = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = env_lock().lock().await;
     let tmp = TempDir::new().unwrap();
     // SAFETY: env access is serialized via `env_lock()`.
     unsafe {

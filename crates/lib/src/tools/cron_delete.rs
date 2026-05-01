@@ -60,8 +60,9 @@ impl Tool for CronDeleteTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidInput("'id' is required".into()))?;
 
-        let store = open_store()
-            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to open schedule store: {e}")))?;
+        let store = open_store().map_err(|e| {
+            ToolError::ExecutionFailed(format!("Failed to open schedule store: {e}"))
+        })?;
 
         match store.remove(id) {
             Ok(()) => {
