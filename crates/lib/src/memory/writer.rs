@@ -16,6 +16,81 @@ const MAX_INDEX_LINE_CHARS: usize = 150;
 /// Maximum index lines before truncation.
 const MAX_INDEX_LINES: usize = 200;
 
+/// Maximum allowed length for a memory filename (including the `.md` suffix).
+const MAX_FILENAME_LEN: usize = 128;
+
+/// Validate a memory filename. Rejects anything that could escape the
+/// memory directory or smuggle control characters into the index.
+///
+/// Rules:
+/// - Non-empty.
+/// - At most `MAX_FILENAME_LEN` bytes (and not `.` / `..`).
+/// - No path separators (`/`, `\`).
+/// - No `..` segments (rejects `..`, `foo/..`, etc.).
+/// - No NUL, newline, carriage return, or other ASCII control characters.
+/// - ASCII-printable only — keeps cross-platform behavior predictable.
+fn validate_memory_filename(filename: &str) -> Result<(), String> {
+    if filename.is_empty() {
+        return Err("memory filename must not be empty".into());
+    }
+    if filename.len() > MAX_FILENAME_LEN {
+        return Err(format!(
+            "memory filename too long ({} > {MAX_FILENAME_LEN} bytes)",
+            filename.len()
+        ));
+    }
+    if filename == "." || filename == ".." {
+        return Err(format!("memory filename '{filename}' is not allowed"));
+    }
+    for ch in filename.chars() {
+        if ch == '/' || ch == '\\' {
+            return Err(format!(
+                "memory filename '{filename}' must not contain path separators"
+            ));
+        }
+        if ch == '\0' {
+            return Err("memory filename must not contain NUL".into());
+        }
+        if ch.is_control() {
+            return Err(format!(
+                "memory filename '{filename}' must not contain control characters"
+            ));
+        }
+        if !ch.is_ascii() || !ch.is_ascii_graphic() {
+            return Err(format!(
+                "memory filename '{filename}' must be ASCII-printable"
+            ));
+        }
+    }
+    if filename.split(['/', '\\']).any(|seg| seg == "..") {
+        return Err(format!(
+            "memory filename '{filename}' must not contain '..' segments"
+        ));
+    }
+    Ok(())
+}
+
+/// Defense-in-depth: after validation, confirm the joined path resolves
+/// inside `memory_dir`. Tolerates either the parent or the file not
+/// existing yet by canonicalizing the directory and checking that the
+/// would-be file's parent matches.
+fn ensure_path_within(memory_dir: &Path, file_path: &Path) -> Result<(), String> {
+    let dir_canon = std::fs::canonicalize(memory_dir)
+        .map_err(|e| format!("Failed to canonicalize memory dir: {e}"))?;
+    let parent = file_path
+        .parent()
+        .ok_or_else(|| "memory file path has no parent".to_string())?;
+    let parent_canon = std::fs::canonicalize(parent)
+        .map_err(|e| format!("Failed to canonicalize memory file parent: {e}"))?;
+    if !parent_canon.starts_with(&dir_canon) {
+        return Err(format!(
+            "memory file path escapes memory directory: {}",
+            file_path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Write a memory file and update the index atomically.
 ///
 /// Returns the path of the written memory file.
@@ -25,6 +100,7 @@ pub fn write_memory(
     meta: &MemoryMeta,
     content: &str,
 ) -> Result<PathBuf, String> {
+    validate_memory_filename(filename)?;
     let _ = std::fs::create_dir_all(memory_dir);
 
     // Step 1: Write the memory file with frontmatter.
@@ -42,6 +118,7 @@ pub fn write_memory(
     );
 
     let file_path = memory_dir.join(filename);
+    ensure_path_within(memory_dir, &file_path)?;
     std::fs::write(&file_path, &file_content)
         .map_err(|e| format!("Failed to write memory file: {e}"))?;
 
@@ -70,9 +147,11 @@ pub fn write_team_memory(
     content: &str,
     force: bool,
 ) -> Result<PathBuf, String> {
+    validate_memory_filename(filename)?;
     let _ = std::fs::create_dir_all(team_memory_dir);
 
     let file_path = team_memory_dir.join(filename);
+    ensure_path_within(team_memory_dir, &file_path)?;
     if file_path.exists() && !force {
         return Err(format!(
             "team-memory entry '{filename}' already exists. \
@@ -140,6 +219,9 @@ pub fn delete_team_memory(team_memory_dir: &Path, name_or_filename: &str) -> Res
     } else {
         format!("{name_or_filename}.md")
     };
+    // Validate before delegating: `delete_memory` would otherwise
+    // happily resolve `../../README.md` against `team_memory_dir`.
+    validate_memory_filename(&filename)?;
     delete_memory(team_memory_dir, &filename)
 }
 
@@ -184,8 +266,12 @@ fn update_index(
 
 /// Remove a memory file and its index entry.
 pub fn delete_memory(memory_dir: &Path, filename: &str) -> Result<(), String> {
+    validate_memory_filename(filename)?;
     let file_path = memory_dir.join(filename);
     if file_path.exists() {
+        // Defense-in-depth: even with a validated filename, confirm
+        // the resolved path lives under `memory_dir` before unlinking.
+        ensure_path_within(memory_dir, &file_path)?;
         std::fs::remove_file(&file_path).map_err(|e| format!("Failed to delete: {e}"))?;
     }
 
@@ -397,6 +483,145 @@ mod tests {
         write_team_memory(dir.path(), "deploy.md", &team_meta(), "x", false).unwrap();
         delete_team_memory(dir.path(), "deploy").unwrap();
         assert!(!dir.path().join("deploy.md").exists());
+    }
+
+    // ---- filename validation / path traversal ----
+
+    #[test]
+    fn validate_rejects_empty() {
+        assert!(validate_memory_filename("").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_dot_and_dotdot() {
+        assert!(validate_memory_filename(".").is_err());
+        assert!(validate_memory_filename("..").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_path_separators() {
+        assert!(validate_memory_filename("foo/bar.md").is_err());
+        assert!(validate_memory_filename("foo\\bar.md").is_err());
+        assert!(validate_memory_filename("/abs.md").is_err());
+        assert!(validate_memory_filename("\\abs.md").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_traversal_segments() {
+        // Even without a separator, '..' alone is rejected via the
+        // dot-handling branch.
+        assert!(validate_memory_filename("..").is_err());
+        // With separators, every '..' segment is rejected by the
+        // separator check first.
+        assert!(validate_memory_filename("../README.md").is_err());
+        assert!(validate_memory_filename("../../etc/passwd").is_err());
+        assert!(validate_memory_filename("a/../b.md").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_nul_and_newline() {
+        assert!(validate_memory_filename("foo\0.md").is_err());
+        assert!(validate_memory_filename("foo\n.md").is_err());
+        assert!(validate_memory_filename("foo\r.md").is_err());
+        assert!(validate_memory_filename("foo\t.md").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_non_ascii() {
+        assert!(validate_memory_filename("café.md").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_overlong() {
+        let huge = "a".repeat(MAX_FILENAME_LEN + 1) + ".md";
+        assert!(validate_memory_filename(&huge).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_normal_names() {
+        assert!(validate_memory_filename("deploy.md").is_ok());
+        assert!(validate_memory_filename("team-deploy_2025.md").is_ok());
+        assert!(validate_memory_filename("a.md").is_ok());
+    }
+
+    #[test]
+    fn delete_team_memory_rejects_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        // Plant a sibling file we want to confirm survives the attempt.
+        let outside = dir.path().parent().unwrap().join("VICTIM.md");
+        std::fs::write(&outside, "do not delete").unwrap();
+
+        // Create the team-memory dir.
+        let team_dir = dir.path().join("team");
+        std::fs::create_dir_all(&team_dir).unwrap();
+
+        // Bare name `../VICTIM` becomes `../VICTIM.md` after the
+        // suffix trim — must be rejected.
+        let err = delete_team_memory(&team_dir, "../VICTIM").unwrap_err();
+        assert!(
+            err.contains("path separators") || err.contains(".."),
+            "unexpected error: {err}"
+        );
+
+        // Filename form must also be rejected.
+        let err = delete_team_memory(&team_dir, "../VICTIM.md").unwrap_err();
+        assert!(
+            err.contains("path separators") || err.contains(".."),
+            "unexpected error: {err}"
+        );
+
+        // Embedded NUL is rejected.
+        assert!(delete_team_memory(&team_dir, "deploy\0").is_err());
+        // Embedded newline is rejected.
+        assert!(delete_team_memory(&team_dir, "deploy\nfoo").is_err());
+        // Nested subdir rejected.
+        assert!(delete_team_memory(&team_dir, "sub/dir").is_err());
+        // Leading slash rejected.
+        assert!(delete_team_memory(&team_dir, "/etc/passwd").is_err());
+
+        // The outside file still exists.
+        assert!(outside.exists(), "traversal deleted a file outside dir");
+        // Cleanup.
+        let _ = std::fs::remove_file(outside);
+    }
+
+    #[test]
+    fn write_team_memory_rejects_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        // `../foo.md` would land outside the dir; reject before write.
+        let err =
+            write_team_memory(dir.path(), "../escape.md", &team_meta(), "x", false).unwrap_err();
+        assert!(
+            err.contains("path separators") || err.contains(".."),
+            "unexpected error: {err}"
+        );
+        assert!(!dir.path().parent().unwrap().join("escape.md").exists());
+    }
+
+    #[test]
+    fn write_memory_rejects_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = write_memory(dir.path(), "../escape.md", &test_meta(), "x").unwrap_err();
+        assert!(
+            err.contains("path separators") || err.contains(".."),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn delete_memory_rejects_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        // Plant a victim file in the parent directory.
+        let outside = dir.path().parent().unwrap().join("VICTIM_DEL.md");
+        std::fs::write(&outside, "do not delete").unwrap();
+
+        let err = delete_memory(dir.path(), "../VICTIM_DEL.md").unwrap_err();
+        assert!(
+            err.contains("path separators") || err.contains(".."),
+            "unexpected error: {err}"
+        );
+        assert!(outside.exists());
+        let _ = std::fs::remove_file(outside);
     }
 
     #[test]

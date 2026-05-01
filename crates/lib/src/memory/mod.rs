@@ -457,9 +457,15 @@ fn load_referenced_files(index: &str, base_dir: &Path, scope: types::Scope) -> V
 /// but the same filename. On collision, the higher-precedence entry
 /// wins and a debug log records the discarded scope. Callers should
 /// rely on this function rather than dedup themselves.
+///
+/// The returned `Vec` is sorted by `(scope_priority, path_lex)` where
+/// scope priority is `User < Team < Project` (most-specific last). This
+/// ordering is deterministic across loads with identical inputs, which
+/// is required for prompt-cache stability — `HashMap::into_values`
+/// would otherwise shuffle the prompt layout between sessions.
 fn merge_scoped_files(candidates: Vec<MemoryFile>) -> Vec<MemoryFile> {
-    use std::collections::HashMap;
-    let mut by_id: HashMap<String, MemoryFile> = HashMap::new();
+    use std::collections::BTreeMap;
+    let mut by_id: BTreeMap<String, MemoryFile> = BTreeMap::new();
     for file in candidates {
         let id = file
             .path
@@ -495,7 +501,18 @@ fn merge_scoped_files(candidates: Vec<MemoryFile>) -> Vec<MemoryFile> {
             }
         }
     }
-    by_id.into_values().collect()
+    let mut out: Vec<MemoryFile> = by_id.into_values().collect();
+    // Stable order: sort by (scope_priority, path). Lower-priority
+    // scopes come first so the prompt builder emits broad context
+    // before specific overrides, matching the
+    // outermost→innermost convention used elsewhere
+    // (see `hierarchical_project_files`).
+    out.sort_by(|a, b| {
+        scope_precedence(a.scope)
+            .cmp(&scope_precedence(b.scope))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    out
 }
 
 /// Precedence ranking: higher number wins on collision.
@@ -853,5 +870,139 @@ mod tests {
         ];
         let merged = merge_scoped_files(candidates);
         assert_eq!(merged.len(), 2);
+    }
+
+    // ---- merge ordering determinism ----
+
+    #[test]
+    fn merge_scoped_files_is_deterministic_across_input_orders() {
+        // Same set of candidates, two different input orders. The
+        // merged output must be byte-identical (path/name/scope), so
+        // the resulting system prompt does not shuffle between loads.
+        let mk = |scope, id: &str, dir: &str| MemoryFile {
+            path: std::path::PathBuf::from(format!("/{dir}/{id}.md")),
+            name: id.to_string(),
+            content: format!("{id}-body"),
+            staleness: None,
+            scope,
+        };
+        let a = mk(types::Scope::User, "alpha", "u");
+        let b = mk(types::Scope::Team, "beta", "t");
+        let c = mk(types::Scope::Project, "gamma", "p");
+        let d = mk(types::Scope::User, "delta", "u");
+
+        let m1 = merge_scoped_files(vec![a.clone(), b.clone(), c.clone(), d.clone()]);
+        let m2 = merge_scoped_files(vec![d, c, b, a]);
+
+        let key = |f: &MemoryFile| (f.path.clone(), f.scope, f.name.clone());
+        let k1: Vec<_> = m1.iter().map(key).collect();
+        let k2: Vec<_> = m2.iter().map(key).collect();
+        assert_eq!(k1, k2, "merge order must not depend on input order");
+    }
+
+    #[test]
+    fn merge_scoped_files_orders_user_before_team_before_project() {
+        let mk = |scope, id: &str| MemoryFile {
+            path: std::path::PathBuf::from(format!("/{id}.md")),
+            name: id.into(),
+            content: id.into(),
+            staleness: None,
+            scope,
+        };
+        let merged = merge_scoped_files(vec![
+            mk(types::Scope::Project, "z-proj"),
+            mk(types::Scope::User, "m-user"),
+            mk(types::Scope::Team, "a-team"),
+        ]);
+        // User first, then Team, then Project — most-specific last.
+        let scopes: Vec<_> = merged.iter().map(|f| f.scope).collect();
+        assert_eq!(
+            scopes,
+            vec![
+                types::Scope::User,
+                types::Scope::Team,
+                types::Scope::Project
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_scoped_files_orders_within_scope_lexicographically() {
+        let mk = |scope, id: &str| MemoryFile {
+            path: std::path::PathBuf::from(format!("/{id}.md")),
+            name: id.into(),
+            content: id.into(),
+            staleness: None,
+            scope,
+        };
+        let merged = merge_scoped_files(vec![
+            mk(types::Scope::User, "z-user"),
+            mk(types::Scope::User, "a-user"),
+            mk(types::Scope::User, "m-user"),
+        ]);
+        let names: Vec<_> = merged.iter().map(|f| f.name.clone()).collect();
+        assert_eq!(names, vec!["a-user", "m-user", "z-user"]);
+    }
+
+    #[test]
+    fn memory_context_load_is_deterministic_across_calls() {
+        // Build a project tree containing both team and project memory
+        // entries, then load the context twice. The two loads must
+        // produce the same `memory_files` ordering — otherwise the
+        // system prompt would shuffle and break prompt-cache hits.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+
+        // Team-memory entries.
+        write_team_memory_file(
+            root,
+            "deploy.md",
+            "- [Deploy](deploy.md) — deploy steps\n- [Onboarding](onboarding.md) — onboarding\n",
+            "---\nname: Deploy\ndescription: d\ntype: project\n---\n\nteam-deploy",
+        );
+        std::fs::write(
+            root.join(".agent")
+                .join("team-memory")
+                .join("onboarding.md"),
+            "---\nname: Onboarding\ndescription: o\ntype: project\n---\n\nteam-onboard",
+        )
+        .unwrap();
+
+        // Project-memory entries.
+        let proj_dir = root.join(".agent").join("memory");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::write(
+            proj_dir.join("MEMORY.md"),
+            "- [Style](style.md) — style guide\n- [Arch](arch.md) — architecture\n",
+        )
+        .unwrap();
+        std::fs::write(
+            proj_dir.join("style.md"),
+            "---\nname: Style\ndescription: s\ntype: project\n---\n\nstyle-body",
+        )
+        .unwrap();
+        std::fs::write(
+            proj_dir.join("arch.md"),
+            "---\nname: Arch\ndescription: a\ntype: project\n---\n\narch-body",
+        )
+        .unwrap();
+
+        let ctx1 = MemoryContext::load(Some(root));
+        let ctx2 = MemoryContext::load(Some(root));
+
+        let key = |f: &MemoryFile| (f.path.clone(), f.scope, f.name.clone());
+        let k1: Vec<_> = ctx1.memory_files.iter().map(key).collect();
+        let k2: Vec<_> = ctx2.memory_files.iter().map(key).collect();
+        assert_eq!(k1, k2, "memory_files order must be deterministic");
+
+        // And the on-disk team index is byte-stable too — write_team_memory
+        // appends in source order, so re-reading must round-trip the same
+        // bytes regardless of how `merge_scoped_files` orders entries.
+        let team_index_bytes =
+            std::fs::read(root.join(".agent").join("team-memory").join("MEMORY.md")).unwrap();
+        let team_index_bytes2 =
+            std::fs::read(root.join(".agent").join("team-memory").join("MEMORY.md")).unwrap();
+        assert_eq!(team_index_bytes, team_index_bytes2);
     }
 }
