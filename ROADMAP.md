@@ -1582,6 +1582,156 @@ The existing TUI re-renders from scratch on most events, causing flicker in long
 
 ---
 
+## Phase 8: Extensibility, Surfaces, and Orchestration
+
+**Priority: High** | **Target: v1.1 – v1.3**
+
+This phase grows agent-code along three axes: (a) **extensibility** so users can add capability without forking, (b) **surfaces** so the agent can host non-terminal clients, and (c) **orchestration** so multi-worker workflows are first-class. Each subsection is independently shippable.
+
+### 8.1 Plugin Marketplace and Built-in Plugin Registry
+
+Today plugin *execution* exists (`crates/lib/src/services/plugins.rs`, `crates/lib/src/tools/plugin_exec.rs`) but there is no install/list/enable UX, no marketplace fetcher, and no notion of built-in plugins. This is the highest-leverage gap because nearly every other extensibility item below could ship as a plugin once the surface lands.
+
+- [ ] Define a plugin manifest schema (id, version, entrypoint, declared tools, declared skills, declared commands, permissions)
+- [ ] Built-in plugin registry: `@builtin/<name>` IDs that ship with the binary, enable/disable per-project
+- [ ] Disk-based plugin loader: `~/.config/agent-code/plugins/` and `<project>/.agent/plugins/`
+- [ ] Marketplace fetcher: pull signed plugin bundles from a configured registry URL with checksum verification
+- [ ] Slash commands: `/plugin install <id>`, `/plugin list`, `/plugin enable <id>`, `/plugin disable <id>`, `/plugin remove <id>`
+- [ ] Plugin sandbox: each plugin runs under the same permission model as MCP servers (no implicit fs/net)
+- [ ] Plugin can contribute: tools, skills, slash commands, output styles, hooks
+- [ ] Doc page: `docs/plugins.mdx` with authoring guide
+
+### 8.2 Disk-Loaded Output Styles
+
+Output style presets are currently hardcoded in `crates/lib/src/state/mod.rs`. Users should be able to drop a markdown file in their project or user dir and have it picked up.
+
+- [ ] Loader for `<project>/.agent/output-styles/*.md` and `~/.config/agent-code/output-styles/*.md`
+- [ ] Frontmatter schema: `name`, `description`, `applies_to` (optional list of subagent kinds)
+- [ ] `/output-style` command lists disk styles alongside built-ins
+- [ ] Hot reload on file change within a session
+- [ ] Migration: keep current built-ins as `@builtin/*` styles for backward compatibility
+
+### 8.3 Bundled First-Party Skills
+
+We ship 12 skills today. Expand the bundled set to cover the most common day-to-day workflows so new users get value with zero configuration.
+
+- [ ] **batch** — apply a single change across many files with a preview/confirm step
+- [ ] **loop** — run a prompt or slash command on a recurring interval
+- [ ] **remember** — long-term memory write helper with type/scope prompting
+- [ ] **simplify** — review changed code for reuse, quality, and efficiency
+- [ ] **stuck** — escape hatch when the agent has been spinning on the same problem
+- [ ] **verify** — independent verification pass after a non-trivial implementation
+- [ ] **schedule-agent** — wrap the cron tools (8.5) with a friendlier authoring flow
+- [ ] **update-config** — guided edits to settings.json with validation
+- [ ] Each skill: standalone test, doc entry, and listed in `/skills`
+
+### 8.4 Settings Migrations Framework
+
+As config schema evolves we need a forward-migration path so old `~/.config/agent-code/settings.json` files do not break. Today there is no migration runner.
+
+- [ ] `crates/lib/src/config/migrations/` directory with numbered migration files
+- [ ] Each migration: `from_version`, `to_version`, pure function `(serde_json::Value) -> Result<serde_json::Value>`
+- [ ] Migration runner executes on settings load; writes back atomically with a `.bak` rotation
+- [ ] First migration set: any in-flight rename/restructure work; thereafter every schema change ships with a migration
+- [ ] Migration test harness: golden inputs/outputs in `crates/lib/tests/config_migrations.rs`
+- [ ] Doc page: `docs/config-migrations.mdx`
+
+### 8.5 Cron and Remote-Trigger Model Tools
+
+Cron storage and an executor already exist in `crates/lib/src/schedule/`. The remaining work is exposing them as model-callable tools so the agent can manage its own schedules and trigger remote runs.
+
+- [ ] `CronCreate` tool — schema: cron expression, prompt, optional working directory, optional timeout
+- [ ] `CronList` tool — list active routines with last-run/next-run timestamps
+- [ ] `CronDelete` tool — remove a routine by id
+- [ ] `RemoteTrigger` tool — fire a one-off run of a stored routine and stream output back into the calling session
+- [ ] Permission gate: scheduled-run creation behind a permission rule (default: ask)
+- [ ] Slash command parity: `/schedule create|list|delete|run`
+- [ ] Doc page: `docs/scheduled-agents.mdx` (extend existing scheduled-agents docs)
+
+### 8.6 Multi-Surface Host: Direct-Connect Server, Remote Bridge, IDE Bridge
+
+Today agent-code has a TUI plus a headless `--serve` HTTP API and an ACP daemon. To host non-terminal clients (mobile, web, IDE), we need a dedicated bridge layer with session management, permission proxying, and a documented wire protocol.
+
+- [ ] **Direct-connect server** — long-lived process exposing HTTP+WebSocket; per-connection session state; auth token rotation
+- [ ] **Remote session manager** — session ids, attach/detach, history pagination, replay-on-reconnect
+- [ ] **Permission bridge** — forwards permission prompts to the connected client and round-trips the answer
+- [ ] **IDE bridge** — VS Code / JetBrains adapter that speaks the bridge protocol; surfaces tool calls and diffs in the editor
+- [ ] **Wire-protocol spec** — published in `docs/protocol/` (versioned, additive-only)
+- [ ] **Reference client** — minimal CLI client in `client/` that exercises every protocol message
+- [ ] Reuse existing Flutter client where possible; document any breaking changes
+
+### 8.7 Teammate / Swarm Mode
+
+The current coordinator (`crates/lib/src/services/coordinator.rs`) is a session orchestrator, not a worker-spawning swarm. We want a first-class "teammate" mode where the lead agent spawns sibling workers, exchanges messages, and merges results.
+
+- [ ] `TeamCreate` tool — spawn a teammate worker with a scoped prompt and optional toolset
+- [ ] `TeamDelete` tool — terminate a teammate
+- [ ] `SyntheticOutput` tool — inject a structured result into the parent session as if it were a tool call (used by teammates to report)
+- [ ] Shared scratchpad: append-only log readable by lead and teammates, gated by a permission rule
+- [ ] Concurrency cap configurable per project (`max_teammates`)
+- [ ] Cancellation propagates from lead to teammates
+- [ ] Add to `docs/multi-agent.mdx`
+
+### 8.8 Additional Model-Callable Tools
+
+A handful of small tools that close usability gaps for the model itself.
+
+- [ ] **Brief** — file a structured research handoff (question, context, attachments) that another session can consume
+- [ ] **Config** — model-callable settings reader/writer with a typed `supported_settings` schema and a hard allow-list (nothing else is mutable from a tool call)
+- [ ] **McpAuth** — re-trigger the OAuth/auth flow for a configured MCP server when a call returns 401, without dropping back to the user
+- [ ] Each tool gated behind a permission rule with sane defaults
+
+### 8.9 Bash Tool Hardening
+
+The Bash tool is one of the highest-blast-radius surfaces and our helpers around it are still thin. Pull the safety logic into named modules so it can be tested in isolation.
+
+- [ ] `bash_security.rs` — destructive command detection (already partially present; consolidate)
+- [ ] `command_semantics.rs` — classify commands as read-only / mutating / network / privileged
+- [ ] `read_only_validation.rs` — when the active permission profile is read-only, refuse mutating commands before exec
+- [ ] `sandbox_decision.rs` — single function deciding whether a given command runs sandboxed, prompted, or freely
+- [ ] `sed_edit_parser.rs` + `sed_validation.rs` — parse `sed -i` invocations and route through the same edit-permission path as FileEdit
+- [ ] Property tests on each helper; fuzz target on `bash_parse.rs`
+
+### 8.10 Coordinator Memory Snapshot, Color Manager, and Fork/Resume
+
+Quality-of-life improvements for the existing Agent tool that materially improve long sessions.
+
+- [ ] **Memory snapshot** — agent receives a frozen view of the lead's auto-memory at spawn time (no live updates) so its outputs are reproducible
+- [ ] **Color manager** — assign each subagent a stable display color across a session; surface in TUI and bridge protocol
+- [ ] **Fork** — duplicate a running subagent's state into a new id (cheap branching for "what if I tried this instead")
+- [ ] **Resume** — reattach to a prior subagent run by id and continue from its last checkpoint
+
+### 8.11 Memory: Team-Memory Layer
+
+Memory currently has scanner / extraction / consolidation / session-notes. Add a team-memory layer so a project shared between multiple users has a common memory surface.
+
+- [ ] `<project>/.agent/team-memory/` directory, version-controlled by default
+- [ ] Distinct from per-user memory: read by every session, written only via explicit `/team-remember`
+- [ ] Conflict resolution: append-only with author + timestamp; periodic consolidation pass
+- [ ] Sync hook: optional pre-commit reminder when team memory changed
+- [ ] Doc: extend `docs/memory.mdx`
+
+### 8.12 Service Layer Fill-In
+
+Several supporting services exist in plan but not in code. Land each as a small, well-scoped crate-internal module.
+
+- [ ] **OAuth service** — browser-based auth flow with OS keychain storage (also referenced in 7.11)
+- [ ] **Policy/rate-limit service** — central place to apply org-level quotas across providers
+- [ ] **Settings sync service** — opt-in remote backup of `settings.json` (encrypted client-side)
+- [ ] **Tips service** — surfaces a rotating tip on idle; tips authored as bundled markdown
+- [ ] **Notifier service** — desktop notifications on long-running task completion / permission prompt while backgrounded
+
+### 8.13 Task Model Variants
+
+Today there is one task model. Generalize so different task kinds (local shell, local agent, scheduled run, MCP monitor) share the queue but carry kind-specific payload.
+
+- [ ] `TaskKind` enum: `LocalShell`, `LocalAgent`, `LocalWorkflow`, `MonitorMcp`, `RemoteAgent`, `Dream` (idle-time background work)
+- [ ] Per-kind executor trait, registered into the task runner
+- [ ] Surface task kind in `/tasks` output and in `TaskList`/`TaskGet` tool results
+- [ ] Persist kind-specific payload alongside the task record
+
+---
+
 ## Performance Targets — In Progress
 
 | Metric | Before | After | Target (v1.0) | Status |
@@ -1632,6 +1782,16 @@ Priority areas where contributions are most welcome:
 11. **Remote agent protocol** (7.8) — JSON-RPC 2.0 with Agent Card discovery
 12. **Conversation branching** (7.15) — Named branches, checkout, merge (basic `/fork` exists)
 
+### Phase 8 priorities (v1.1 – v1.3)
+13. **Plugin marketplace** (8.1) — install/list/enable plugins; built-in registry
+14. **Disk-loaded output styles** (8.2) — small, high-visibility win
+15. **Cron + RemoteTrigger model tools** (8.5) — storage and executor already exist
+16. **Direct-connect server / IDE bridge** (8.6) — host non-terminal clients
+17. **Teammate / swarm mode** (8.7) — Team* and SyntheticOutput tools
+18. **Bundled first-party skills** (8.3) — batch, loop, simplify, verify, stuck, remember
+19. **Settings migrations framework** (8.4) — forward-migrate older config files
+20. **Bash tool hardening** (8.9) — split safety helpers into testable modules
+
 ---
 
-*Last updated: 2026-04-15*
+*Last updated: 2026-04-30*
